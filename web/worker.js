@@ -8,6 +8,7 @@ const PY_FILES = [
   "schedule.py",
   "review.py",
   "render_bracket.py",
+  "build_template.py",
   "run.py",
 ];
 
