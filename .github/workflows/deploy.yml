@@ -1,0 +1,57 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Copy web/ to build/
+        run: |
+          mkdir -p build
+          cp -r web/* build/
+
+      - name: Encrypt index.html with StatiCrypt
+        env:
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+        run: |
+          if [ -z "$SITE_PASSWORD" ]; then
+            echo "::error::Secret SITE_PASSWORD가 설정되지 않았습니다. Repo Settings → Secrets and variables → Actions에 SITE_PASSWORD를 추가하세요."
+            exit 1
+          fi
+          cd build
+          npx -y staticrypt index.html \
+            --password "$SITE_PASSWORD" \
+            --short \
+            --template-title "테니스 대진표 — 비밀번호 입력" \
+            --template-instructions "클럽 공유 비밀번호를 입력하세요." \
+            --template-button "들어가기" \
+            -d encrypted
+          mv encrypted/index.html ./index.html
+          rm -rf encrypted
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./build
+          publish_branch: gh-pages
+          force_orphan: true

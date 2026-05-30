@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 작업 산출물 (런타임 생성)
+_workspace/
+_workspace_prev/
+build/
+
+# 결과 파일 (각자 환경에서 생성)
+출력/*.xlsx
+
+# 입력 양식 — 회원이 채워넣는 사본은 커밋 안 함
+입력/*.xlsx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 노드 (StatiCrypt 등)
+node_modules/
+package-lock.json

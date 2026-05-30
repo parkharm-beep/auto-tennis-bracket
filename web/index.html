@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=1000" />
+<title>테니스 대진표 생성기</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: "맑은 고딕", -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: 24px; background: #f6f7f9; color: #222;
+  }
+  .container { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  .sub { color: #666; font-size: 13px; margin: 0 0 18px; }
+  .card {
+    background: #fff; border: 1px solid #e3e6ec; border-radius: 10px;
+    padding: 18px 22px; margin-bottom: 16px;
+  }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: #555; }
+  input[type="text"], input[type="number"], input[type="file"] {
+    border: 1px solid #cfd3da; border-radius: 6px; padding: 6px 8px; font-size: 14px;
+    background: #fff;
+  }
+  input[type="file"] { padding: 4px; }
+  .w-short { width: 110px; }
+  .w-mid { width: 200px; }
+  .w-long { width: 340px; }
+  button {
+    background: #2a6df4; color: #fff; border: 0; border-radius: 6px;
+    padding: 9px 18px; font-size: 14px; cursor: pointer;
+  }
+  button:disabled { background: #9ab2e1; cursor: not-allowed; }
+  button.secondary { background: #6c757d; }
+  button.secondary:disabled { background: #b0b6bc; }
+  pre#log {
+    background: #1e1e1e; color: #d6d6d6; border-radius: 6px;
+    padding: 12px; height: 170px; overflow: auto;
+    font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap;
+  }
+  .result-box { font-size: 14px; line-height: 1.7; }
+  .result-header { font-weight: bold; font-size: 16px; margin-bottom: 6px; }
+  .verdict { padding: 1px 8px; border-radius: 4px; font-weight: bold; }
+  .verdict-pass { background: #d4edda; color: #155724; }
+  .verdict-retry { background: #fff3cd; color: #856404; }
+  .download-link {
+    display: inline-block; margin: 8px 0 14px;
+    background: #28a745; color: #fff; padding: 10px 16px; border-radius: 6px;
+    text-decoration: none; font-weight: bold;
+  }
+  details summary { cursor: pointer; margin-top: 6px; }
+  details ul { margin: 4px 0 4px 18px; }
+  .note { font-size: 12px; color: #777; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎾 테니스 대진표 생성기</h1>
+  <p class="sub">입력 엑셀을 올리면 브라우저 안에서 바로 처리됩니다. <strong>파일은 서버로 전송되지 않습니다.</strong></p>
+
+  <div class="card">
+    <div class="row" style="align-items:center; gap:10px;">
+      <div style="flex:1; font-size:14px;">처음 사용하시나요? 빈 입력 양식을 먼저 다운로드해서 채우세요.</div>
+      <button id="tpl-empty" class="secondary">빈 양식 다운로드</button>
+      <button id="tpl-prefill" class="secondary">사전채움 양식 다운로드</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <div class="field w-long">
+        <label>입력 엑셀 (참가자/코트 시트 포함)</label>
+        <input type="file" id="file" accept=".xlsx" />
+      </div>
+      <div class="field">
+        <label>날짜</label>
+        <input type="text" id="date" class="w-short" placeholder="26.5.30" />
+      </div>
+      <div class="field">
+        <label>시드</label>
+        <input type="number" id="seed" class="w-short" value="7" />
+      </div>
+      <div class="field">
+        <label>반복 횟수</label>
+        <input type="number" id="iters" class="w-short" value="150" />
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <div class="field w-long" style="flex:1;">
+        <label>제목</label>
+        <input type="text" id="title" value="우리 테니스 클럽 대진표" />
+      </div>
+      <button id="run">대진표 생성</button>
+    </div>
+    <p class="note" style="margin-top:10px;">
+      처음 실행 시 Pyodide(Python 런타임)와 openpyxl을 다운로드합니다(약 10MB, 5~10초). 두 번째부터는 캐시되어 즉시 시작합니다.
+    </p>
+  </div>
+
+  <div class="card">
+    <div style="font-weight:bold; margin-bottom:6px;">실행 로그</div>
+    <pre id="log"></pre>
+  </div>
+
+  <div class="card" id="summary"></div>
+</div>
+<script src="./app.js"></script>
+</body>
+</html>
