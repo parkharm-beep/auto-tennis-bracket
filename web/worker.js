@@ -27,8 +27,9 @@ await micropip.install('openpyxl')
 
   postMessage({ type: "log", msg: "Python 모듈 로드 중…" });
   pyodide.FS.mkdirTree("/home/pyodide/app");
+  const cacheBust = `?t=${Date.now()}`;
   for (const f of PY_FILES) {
-    const text = await (await fetch(`./py/${f}?v=1`)).text();
+    const text = await (await fetch(`./py/${f}${cacheBust}`)).text();
     pyodide.FS.writeFile(`/home/pyodide/app/${f}`, text);
   }
   pyodide.runPython(`

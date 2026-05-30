@@ -42,7 +42,8 @@ function downloadBlob(bytes, filename, mime) {
 let pendingTemplateName = null;
 
 let workerReady = false;
-const worker = new Worker("./worker.js");
+const WORKER_VERSION = Date.now();
+const worker = new Worker(`./worker.js?v=${WORKER_VERSION}`);
 
 worker.onmessage = (e) => {
   const { type, msg, payload } = e.data;
