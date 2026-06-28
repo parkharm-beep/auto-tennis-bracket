@@ -66,6 +66,14 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
     clubs_present = {s.get("club", "") for s in player_stats if s.get("club", "")}
     is_exchange = len(clubs_present) > 1
 
+    def _club_order_key(c):
+        # 정회원이 많은 클럽(=홈)을 왼쪽으로
+        members = sum(1 for s in player_stats
+                      if s.get("club", "") == c and s.get("membership") == "정회원")
+        return (-members, c)
+    clubs_ordered = sorted(clubs_present, key=_club_order_key)
+    two_club_mode = is_exchange and len(clubs_present) == 2
+
     matches_by_slot_court = defaultdict(dict)
     for m in matches:
         matches_by_slot_court[m["slot_start"]][m["court"]] = m
@@ -137,11 +145,13 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
         hc.border = BORDER
 
     # 우측 패널 헤더
+    _left_hdr = clubs_ordered[0] if two_club_mode else "참가자"
+    _right_hdr = clubs_ordered[1] if two_club_mode else "참가자"
     ws.cell(row=HEADER_ROW, column=summary_left_start, value="")
-    ws.cell(row=HEADER_ROW, column=summary_left_start + 1, value="참가자")
+    ws.cell(row=HEADER_ROW, column=summary_left_start + 1, value=_left_hdr)
     ws.cell(row=HEADER_ROW, column=summary_left_start + 2, value="게임수")
     ws.cell(row=HEADER_ROW, column=summary_left_start + 4, value="")
-    ws.cell(row=HEADER_ROW, column=summary_left_start + 5, value="참가자")
+    ws.cell(row=HEADER_ROW, column=summary_left_start + 5, value=_right_hdr)
     ws.cell(row=HEADER_ROW, column=summary_left_start + 6, value="게임수")
     for off in (0, 1, 2, 4, 5, 6):
         c = ws.cell(row=HEADER_ROW, column=summary_left_start + off)
@@ -217,91 +227,79 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
                 vs_cell.value = "혼"
 
     # 우측 패널: 참가자 + 게임수
-    stats_sorted = sorted(player_stats, key=lambda s: -s["available_slots"])
-    half = (len(stats_sorted) + 1) // 2
-    left_list = stats_sorted[:half]
-    right_list = stats_sorted[half:]
-
+    # 게임수는 정적 숫자가 아니라 COUNTIF 수식 — 대진표 칸의 이름을 직접 고치면 자동 재계산된다.
+    # 교류전(클럽 2개)일 때는 좌/우 열을 클럽별로 분리.
     panel_start = data_start_row
-    for idx, p in enumerate(left_list):
-        r = panel_start + idx * 2
-        c1 = ws.cell(row=r, column=summary_left_start, value=idx + 1)
+    last_grid_row = data_start_row + len(schedule_slots) * 2 - 1
+    grid_abs = (f"${get_column_letter(COURTS_COL_START)}${data_start_row}:"
+                f"${get_column_letter(courts_col_end)}${last_grid_row}")
+
+    def write_entry(row, num_col, seq_num, p):
+        c1 = ws.cell(row=row, column=num_col, value=seq_num)
         c1.font = FONT_HEADER
         c1.fill = SUMMARY_NUM_FILL
         c1.alignment = CENTER
         c1.border = BORDER
-        ws.merge_cells(start_row=r, start_column=summary_left_start,
-                       end_row=r + 1, end_column=summary_left_start)
+        ws.merge_cells(start_row=row, start_column=num_col, end_row=row + 1, end_column=num_col)
 
-        c2 = ws.cell(row=r, column=summary_left_start + 1, value=display_name(p))
-        c2.font = FONT_NAME
-        c2.fill = SUMMARY_NUM_FILL
-        c2.alignment = CENTER
-        c2.border = BORDER
+        name_cell = ws.cell(row=row, column=num_col + 1, value=display_name(p))
+        name_cell.font = FONT_NAME
+        name_cell.fill = SUMMARY_NUM_FILL
+        name_cell.alignment = CENTER
+        name_cell.border = BORDER
         info = f"{min_to_hhmm(p['in_min'])}~{min_to_hhmm(p['out_min'])}"
         if p.get("max_games") is not None:
             info += f" / 최대 {p['max_games']}게임"
         if is_exchange and p.get("club"):
             info += f" · {p['club']}"
-        c2_info = ws.cell(row=r + 1, column=summary_left_start + 1, value=info)
-        c2_info.font = FONT_SMALL
-        c2_info.alignment = CENTER
-        c2_info.border = BORDER
+        ci = ws.cell(row=row + 1, column=num_col + 1, value=info)
+        ci.font = FONT_SMALL
+        ci.alignment = CENTER
+        ci.border = BORDER
 
-        c3 = ws.cell(row=r, column=summary_left_start + 2, value=p["games"])
-        c3.font = FONT_NAME
-        c3.fill = SUMMARY_GAME_FILL
-        c3.alignment = CENTER
-        c3.border = BORDER
-        ws.merge_cells(start_row=r, start_column=summary_left_start + 2,
-                       end_row=r + 1, end_column=summary_left_start + 2)
+        # 게임수 = 대진표 영역에서 이 사람 이름이 나오는 횟수 (수정 시 자동 갱신)
+        name_ref = f"{get_column_letter(num_col + 1)}{row}"
+        g = ws.cell(row=row, column=num_col + 2, value=f"=COUNTIF({grid_abs},{name_ref})")
+        g.font = FONT_NAME
+        g.fill = SUMMARY_GAME_FILL
+        g.alignment = CENTER
+        g.border = BORDER
+        ws.merge_cells(start_row=row, start_column=num_col + 2, end_row=row + 1, end_column=num_col + 2)
 
-    for idx, p in enumerate(right_list):
-        r = panel_start + idx * 2
-        num = half + idx + 1
-        base = summary_left_start + 4
-        c1 = ws.cell(row=r, column=base, value=num)
-        c1.font = FONT_HEADER
-        c1.fill = SUMMARY_NUM_FILL
-        c1.alignment = CENTER
-        c1.border = BORDER
-        ws.merge_cells(start_row=r, start_column=base, end_row=r + 1, end_column=base)
+    def write_total(row, game_col, first_row, last_row):
+        rng = f"{get_column_letter(game_col)}{first_row}:{get_column_letter(game_col)}{last_row}"
+        t = ws.cell(row=row, column=game_col, value=f"=SUM({rng})")
+        t.font = FONT_HEADER
+        t.fill = SUMMARY_GAME_FILL
+        t.alignment = CENTER
+        t.border = BORDER
 
-        c2 = ws.cell(row=r, column=base + 1, value=display_name(p))
-        c2.font = FONT_NAME
-        c2.fill = SUMMARY_NUM_FILL
-        c2.alignment = CENTER
-        c2.border = BORDER
-        info = f"{min_to_hhmm(p['in_min'])}~{min_to_hhmm(p['out_min'])}"
-        if p.get("max_games") is not None:
-            info += f" / 최대 {p['max_games']}게임"
-        if is_exchange and p.get("club"):
-            info += f" · {p['club']}"
-        c2_info = ws.cell(row=r + 1, column=base + 1, value=info)
-        c2_info.font = FONT_SMALL
-        c2_info.alignment = CENTER
-        c2_info.border = BORDER
+    left_num_col = summary_left_start
+    right_num_col = summary_left_start + 4
 
-        c3 = ws.cell(row=r, column=base + 2, value=p["games"])
-        c3.font = FONT_NAME
-        c3.fill = SUMMARY_GAME_FILL
-        c3.alignment = CENTER
-        c3.border = BORDER
-        ws.merge_cells(start_row=r, start_column=base + 2, end_row=r + 1, end_column=base + 2)
+    if two_club_mode:
+        # 좌=클럽1, 우=클럽2 로 분리
+        col_lists = [
+            (left_num_col, sorted([s for s in player_stats if s.get("club", "") == clubs_ordered[0]],
+                                  key=lambda s: -s["available_slots"])),
+            (right_num_col, sorted([s for s in player_stats if s.get("club", "") == clubs_ordered[1]],
+                                   key=lambda s: -s["available_slots"])),
+        ]
+    else:
+        stats_sorted = sorted(player_stats, key=lambda s: -s["available_slots"])
+        half = (len(stats_sorted) + 1) // 2
+        col_lists = [
+            (left_num_col, stats_sorted[:half]),
+            (right_num_col, stats_sorted[half:]),
+        ]
 
-    total_left = sum(p["games"] for p in left_list)
-    total_right = sum(p["games"] for p in right_list)
-    panel_end_row = panel_start + max(len(left_list), len(right_list)) * 2
-    if left_list:
-        ws.cell(row=panel_end_row, column=summary_left_start + 2, value=total_left).font = FONT_HEADER
-        ws.cell(row=panel_end_row, column=summary_left_start + 2).fill = SUMMARY_GAME_FILL
-        ws.cell(row=panel_end_row, column=summary_left_start + 2).alignment = CENTER
-        ws.cell(row=panel_end_row, column=summary_left_start + 2).border = BORDER
-    if right_list:
-        ws.cell(row=panel_end_row, column=summary_left_start + 6, value=total_right).font = FONT_HEADER
-        ws.cell(row=panel_end_row, column=summary_left_start + 6).fill = SUMMARY_GAME_FILL
-        ws.cell(row=panel_end_row, column=summary_left_start + 6).alignment = CENTER
-        ws.cell(row=panel_end_row, column=summary_left_start + 6).border = BORDER
+    max_len = max((len(lst) for _, lst in col_lists), default=0)
+    panel_end_row = panel_start + max_len * 2
+    for num_col, lst in col_lists:
+        for idx, p in enumerate(lst):
+            write_entry(panel_start + idx * 2, num_col, idx + 1, p)
+        if lst:
+            write_total(panel_end_row, num_col + 2, panel_start, panel_end_row - 1)
 
     ws.sheet_view.showGridLines = False
     ws.print_options.horizontalCentered = True
