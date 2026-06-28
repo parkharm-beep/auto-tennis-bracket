@@ -24,7 +24,6 @@ W = dict(
     no_member_guest_mix=1.0,
     court_affinity=25.0,
     female_early_slot=80.0,
-    same_club_opponent=300.0,  # 교류전(클럽 2개+): 상대가 같은 클럽이면 벌점 (다른 클럽끼리 경기 유도)
 )
 
 FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
@@ -47,14 +46,21 @@ def _same_club(a: dict, b: dict) -> bool:
 
 def init_state(players: list[dict]) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
+    club_members = {}
+    for p in players:
+        club_members.setdefault(p.get("club", ""), []).append(p["id"])
     return {
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
         "pair_count": {},
         "type_count": {"M": 0, "F": 0, "X": 0},
-        # 클럽이 2개 이상이면 교류전 모드 — 상대 팀을 다른 클럽으로 유도.
+        # 클럽이 2개 이상이면 교류전 모드 — 상대 팀은 반드시 다른 클럽(하드), 게임수 균형은 클럽 내부 기준.
         "multi_club": len(distinct_clubs) > 1,
+        "club_of": {p["id"]: p.get("club", "") for p in players},
+        "club_members": club_members,
+        "club_count": {c: len(ids) for c, ids in club_members.items()},
+        "club_game_sum": {c: 0 for c in club_members},
     }
 
 
@@ -63,6 +69,9 @@ def update_state(state: dict, match: dict) -> None:
     for p_id in match["team1"] + match["team2"]:
         state["player_games"][p_id] += 1
         state["player_slots"][p_id].append(match["slot_start"])
+        club = state.get("club_of", {}).get(p_id, "")
+        if club in state.get("club_game_sum", {}):
+            state["club_game_sum"][club] += 1
     for team in (match["team1"], match["team2"]):
         k = pair_key(team[0], team[1])
         state["pair_count"][k] = state["pair_count"].get(k, 0) + 1
@@ -108,11 +117,18 @@ def match_cost(
         if is_three_streak(p["id"], slot_start, state):
             cost += W["three_consec"]
 
-    games = [state["player_games"][p["id"]] for p in all_players]
-    if state["player_games"]:
+    if state.get("multi_club"):
+        # 교류전: 게임수 균형은 각 클럽 '내부'에서만 평가 (클럽 간 차이는 허용)
+        for p in all_players:
+            club = p.get("club", "")
+            cnt = state.get("club_count", {}).get(club, 1)
+            club_avg = state.get("club_game_sum", {}).get(club, 0) / max(1, cnt)
+            new_g = state["player_games"][p["id"]] + 1
+            cost += W["game_balance"] * (new_g - club_avg) ** 2
+    elif state["player_games"]:
         avg_games = sum(state["player_games"].values()) / max(1, len(state["player_games"]))
-        for g in games:
-            new_g = g + 1
+        for p in all_players:
+            new_g = state["player_games"][p["id"]] + 1
             cost += W["game_balance"] * (new_g - avg_games) ** 2
 
     if match_type == "X":
@@ -128,12 +144,6 @@ def match_cost(
         memberships = {team[0]["membership"], team[1]["membership"]}
         if len(memberships) == 1:
             cost += W["no_member_guest_mix"]
-
-    # 교류전: 같은 팀은 같은 클럽으로 이미 보장됨(enumerate_candidates에서 필터).
-    # 여기서는 "상대 팀이 다른 클럽"을 유도 — 같은 클럽끼리 맞붙으면 벌점.
-    if state.get("multi_club"):
-        if team1[0].get("club", "") == team2[0].get("club", ""):
-            cost += W["same_club_opponent"]
 
     if court_name:
         affinity = COURT_AFFINITY.get(court_name.upper(), {}).get(match_type, 0.0)
@@ -171,16 +181,47 @@ def enumerate_candidates(
             rng.random(),
         ),
     )
-    top = pool_sorted[: min(len(pool_sorted), top_k)]
-
-    males = [p for p in top if p["gender"] == "M"]
-    females = [p for p in top if p["gender"] == "F"]
+    multi_club = bool(state.get("multi_club"))
 
     full_males = [p for p in pool if p["gender"] == "M"]
     full_females = [p for p in pool if p["gender"] == "F"]
     pool_m, pool_f = len(full_males), len(full_females)
 
     candidates = []
+
+    if multi_club:
+        # 교류전: 클럽별로 '게임수 적은 순' 상위 인원만 추려, cross-club 매치만 직접 생성.
+        # (같은 팀=같은 클럽, 상대 팀=다른 클럽이 구조적으로 보장됨 → 낭비 열거 없음)
+        per_club = max(4, (top_k + 1) // 2)
+        m_by_club, f_by_club = {}, {}
+        for p in pool_sorted:
+            (m_by_club if p["gender"] == "M" else f_by_club).setdefault(p.get("club", ""), []).append(p)
+        m_by_club = {c: lst[:per_club] for c, lst in m_by_club.items()}
+        f_by_club = {c: lst[:per_club] for c, lst in f_by_club.items()}
+        club_keys = sorted(set(m_by_club) | set(f_by_club))
+        for i in range(len(club_keys)):
+            for j in range(i + 1, len(club_keys)):
+                Am, Bm = m_by_club.get(club_keys[i], []), m_by_club.get(club_keys[j], [])
+                Af, Bf = f_by_club.get(club_keys[i], []), f_by_club.get(club_keys[j], [])
+                for pa in itertools.combinations(Am, 2):       # 남복: i클럽 vs j클럽
+                    for pb in itertools.combinations(Bm, 2):
+                        candidates.append((match_cost(pa, pb, "M", slot_start, state, pool_m, pool_f, court_name), "M", pa, pb))
+                for pa in itertools.combinations(Af, 2):       # 여복
+                    for pb in itertools.combinations(Bf, 2):
+                        candidates.append((match_cost(pa, pb, "F", slot_start, state, pool_m, pool_f, court_name), "F", pa, pb))
+                for am in Am:                                  # 혼복: (남1+여1) vs (남1+여1)
+                    for af in Af:
+                        t1 = (am, af)
+                        for bm in Bm:
+                            for bf in Bf:
+                                t2 = (bm, bf)
+                                candidates.append((match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name), "X", t1, t2))
+        return candidates
+
+    # 단일 클럽(평소): 기존 로직
+    top = pool_sorted[: min(len(pool_sorted), top_k)]
+    males = [p for p in top if p["gender"] == "M"]
+    females = [p for p in top if p["gender"] == "F"]
 
     if len(males) >= 4:
         for combo in itertools.combinations(males, 4):
@@ -190,9 +231,6 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
-                # 교류전: 같은 팀은 같은 클럽이어야 함 (다른 클럽 페어는 제외)
-                if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
-                    continue
                 c = match_cost(t1, t2, "M", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "M", t1, t2))
 
@@ -204,8 +242,6 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
-                if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
-                    continue
                 c = match_cost(t1, t2, "F", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "F", t1, t2))
 
@@ -219,9 +255,6 @@ def enumerate_candidates(
                     else:
                         t1 = (m_combo[0], f_combo[1])
                         t2 = (m_combo[1], f_combo[0])
-                    # 혼복도 같은 팀(남+여)은 같은 클럽이어야 함
-                    if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
-                        continue
                     c = match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name)
                     candidates.append((c, "X", t1, t2))
 
@@ -306,12 +339,21 @@ def run_one_seed(
             update_state(state, m)
             played_here.update(m["team1"] + m["team2"])
 
-    games = list(state["player_games"].values())
     score = 0.0
-    if games:
-        avg = sum(games) / len(games)
-        score += sum((g - avg) ** 2 for g in games) * 5.0
-        score += (max(games) - min(games)) * 10.0
+    if state.get("multi_club"):
+        # 교류전: 클럽 '내부'에서만 게임수 균형을 평가 (클럽 간 차이는 허용)
+        for ids in state["club_members"].values():
+            gs = [state["player_games"][i] for i in ids]
+            if gs:
+                avg = sum(gs) / len(gs)
+                score += sum((g - avg) ** 2 for g in gs) * 5.0
+                score += (max(gs) - min(gs)) * 10.0
+    else:
+        games = list(state["player_games"].values())
+        if games:
+            avg = sum(games) / len(games)
+            score += sum((g - avg) ** 2 for g in games) * 5.0
+            score += (max(games) - min(games)) * 10.0
 
     pair_dups = sum(c - 1 for c in state["pair_count"].values() if c > 1)
     score += pair_dups * 30.0

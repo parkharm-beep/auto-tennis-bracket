@@ -40,29 +40,45 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
     scores = {}
     issues = []
 
+    distinct_clubs = {p.get("club", "") for p in parsed["players"] if p.get("club", "")}
+    is_exchange = len(distinct_clubs) > 1
+
     games = [s["games"] for s in player_stats]
     scores["game_gap_global"] = (max(games) - min(games)) if games else 0
     scores["games_min"] = min(games) if games else 0
     scores["games_max"] = max(games) if games else 0
     scores["games_avg"] = round(sum(games) / len(games), 2) if games else 0
 
+    # 교류전: 게임수 격차는 클럽 '내부' 기준으로 평가 (클럽 간 차이는 허용)
+    within_gaps = []
+    for club in distinct_clubs:
+        gs = [s["games"] for s in player_stats if s.get("club", "") == club]
+        if gs:
+            within_gaps.append(max(gs) - min(gs))
+    scores["game_gap_within_club"] = max(within_gaps, default=0)
+
     groups = defaultdict(list)
     for s in player_stats:
         if s.get("max_games") is not None:
             continue
-        groups[s["available_slots"]].append(s)
+        key = (s.get("club", ""), s["available_slots"]) if is_exchange else s["available_slots"]
+        groups[key].append(s)
     group_gaps = []
-    for n_slots, members in groups.items():
+    for grp_key, members in groups.items():
         if len(members) < 2:
             continue
         gs = [m["games"] for m in members]
         gap = max(gs) - min(gs)
-        group_gaps.append((n_slots, gap))
+        group_gaps.append((grp_key, gap))
         if gap > THRESHOLDS["game_gap_group"]:
+            if is_exchange and isinstance(grp_key, tuple):
+                label = f"{grp_key[0]} · 가용슬롯 {grp_key[1]}개"
+            else:
+                label = f"가용슬롯 {grp_key}개"
             issues.append({
                 "severity": "high",
                 "code": "game_gap_group",
-                "msg": f"가용슬롯 {n_slots}개 그룹 내 게임수 격차 {gap} (임계 {THRESHOLDS['game_gap_group']} 초과)",
+                "msg": f"{label} 그룹 내 게임수 격차 {gap} (임계 {THRESHOLDS['game_gap_group']} 초과)",
             })
     scores["group_gaps"] = group_gaps
     scores["max_group_gap"] = max((g for _, g in group_gaps), default=0)
@@ -97,8 +113,6 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
         })
 
     # 교류전 검증 (클럽이 2개 이상일 때만)
-    distinct_clubs = {p.get("club", "") for p in parsed["players"] if p.get("club", "")}
-    is_exchange = len(distinct_clubs) > 1
     scores["is_exchange"] = is_exchange
     scores["clubs"] = sorted(distinct_clubs)
     cross_club_pairs = 0
@@ -214,10 +228,16 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
     if scores["cross_club_pairs"] > 0:
         verdict = "RETRY"
 
-    if scores["game_gap_global"] > THRESHOLDS["game_gap_global"]:
-        verdict = "RETRY"
-        issues.append({"severity": "high", "code": "game_gap_global",
-                       "msg": f"전체 게임수 격차 {scores['game_gap_global']} > {THRESHOLDS['game_gap_global']}"})
+    if is_exchange:
+        if scores["game_gap_within_club"] > THRESHOLDS["game_gap_global"]:
+            verdict = "RETRY"
+            issues.append({"severity": "high", "code": "game_gap_within_club",
+                           "msg": f"클럽 내 게임수 격차 {scores['game_gap_within_club']} > {THRESHOLDS['game_gap_global']} (클럽 간 차이는 정상)"})
+    else:
+        if scores["game_gap_global"] > THRESHOLDS["game_gap_global"]:
+            verdict = "RETRY"
+            issues.append({"severity": "high", "code": "game_gap_global",
+                           "msg": f"전체 게임수 격차 {scores['game_gap_global']} > {THRESHOLDS['game_gap_global']}"})
     if scores["max_group_gap"] > THRESHOLDS["game_gap_group"]:
         verdict = "RETRY"
     if scores["pair_dup_rate"] > THRESHOLDS["pair_dup_rate"]:
