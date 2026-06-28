@@ -96,6 +96,37 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
             "msg": f"페어 중복: {n1}+{n2} ({cnt}회)",
         })
 
+    # 교류전 검증 (클럽이 2개 이상일 때만)
+    distinct_clubs = {p.get("club", "") for p in parsed["players"] if p.get("club", "")}
+    is_exchange = len(distinct_clubs) > 1
+    scores["is_exchange"] = is_exchange
+    scores["clubs"] = sorted(distinct_clubs)
+    cross_club_pairs = 0
+    same_club_matches = 0
+    if is_exchange:
+        for m in matches:
+            for team_ids in (m["team1"], m["team2"]):
+                ca = players_by_id[team_ids[0]].get("club", "")
+                cb = players_by_id[team_ids[1]].get("club", "")
+                if ca != cb:
+                    cross_club_pairs += 1
+                    issues.append({
+                        "severity": "high",
+                        "code": "cross_club_pair",
+                        "msg": f"{min_to_hhmm(m['slot_start'])} {m['court']}코트: 한 팀에 다른 클럽({ca}/{cb}) 혼합 — 교류전 규칙 위반",
+                    })
+            c1 = players_by_id[m["team1"][0]].get("club", "")
+            c2 = players_by_id[m["team2"][0]].get("club", "")
+            if c1 == c2:
+                same_club_matches += 1
+                issues.append({
+                    "severity": "low",
+                    "code": "same_club_match",
+                    "msg": f"{min_to_hhmm(m['slot_start'])} {m['court']}코트: 같은 클럽({c1})끼리 경기 — 인원 사정상 불가피할 수 있음",
+                })
+    scores["cross_club_pairs"] = cross_club_pairs
+    scores["same_club_matches"] = same_club_matches
+
     three_consec, two_consec = 0, 0
     three_consec_per_player = defaultdict(int)
     for s in player_stats:
@@ -180,6 +211,9 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
     if scores["max_games_violations"]:
         verdict = "RETRY"
 
+    if scores["cross_club_pairs"] > 0:
+        verdict = "RETRY"
+
     if scores["game_gap_global"] > THRESHOLDS["game_gap_global"]:
         verdict = "RETRY"
         issues.append({"severity": "high", "code": "game_gap_global",
@@ -228,6 +262,8 @@ def print_report(review: dict) -> None:
     print(f"팀 구력차: 평균 {s['team_skill_avg']}, 최대 {s['team_skill_max']}")
     print(f"혼복 비율: {s['mixed_ratio']*100:.1f}%")
     print(f"혼복 규칙 위반: {s['mixed_skill_violations']}건")
+    if s.get("is_exchange"):
+        print(f"교류전: 클럽 {', '.join(s.get('clubs', []))}  |  클럽혼합 페어(위반) {s.get('cross_club_pairs', 0)}건, 같은클럽끼리 경기 {s.get('same_club_matches', 0)}건")
     print("-" * 60)
     if review["issues"]:
         print(f"이슈 {len(review['issues'])}건:")

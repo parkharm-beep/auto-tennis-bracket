@@ -63,6 +63,9 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
     matches = bracket["matches"]
     player_stats = bracket["player_stats"]
 
+    clubs_present = {s.get("club", "") for s in player_stats if s.get("club", "")}
+    is_exchange = len(clubs_present) > 1
+
     matches_by_slot_court = defaultdict(dict)
     for m in matches:
         matches_by_slot_court[m["slot_start"]][m["court"]] = m
@@ -238,6 +241,8 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
         info = f"{min_to_hhmm(p['in_min'])}~{min_to_hhmm(p['out_min'])}"
         if p.get("max_games") is not None:
             info += f" / 최대 {p['max_games']}게임"
+        if is_exchange and p.get("club"):
+            info += f" · {p['club']}"
         c2_info = ws.cell(row=r + 1, column=summary_left_start + 1, value=info)
         c2_info.font = FONT_SMALL
         c2_info.alignment = CENTER
@@ -270,6 +275,8 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
         info = f"{min_to_hhmm(p['in_min'])}~{min_to_hhmm(p['out_min'])}"
         if p.get("max_games") is not None:
             info += f" / 최대 {p['max_games']}게임"
+        if is_exchange and p.get("club"):
+            info += f" · {p['club']}"
         c2_info = ws.cell(row=r + 1, column=base + 1, value=info)
         c2_info.font = FONT_SMALL
         c2_info.alignment = CENTER
@@ -315,6 +322,14 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
         ("게임수 최대", max((p["games"] for p in player_stats), default=0)),
         ("게임수 최소", min((p["games"] for p in player_stats), default=0)),
     ]
+    if is_exchange:
+        rows.append(("", ""))
+        rows.append(("교류전 클럽 수", len(clubs_present)))
+        club_counts = defaultdict(int)
+        for s in player_stats:
+            club_counts[s.get("club", "")] += 1
+        for cname in sorted(clubs_present):
+            rows.append((f"  · {cname}", f"{club_counts[cname]}명"))
     for i, (k, v) in enumerate(rows, start=1):
         ws2.cell(row=i, column=1, value=k).font = FONT_HEADER
         ws2.cell(row=i, column=2, value=v).font = FONT_NAME

@@ -67,6 +67,14 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             if membership not in ("정회원", "게스트"):
                 raise ValueError(f"'{name}': 구분은 '정회원' 또는 '게스트'여야 합니다 (현재: '{membership}')")
 
+            # 클럽 (선택). 비우거나 컬럼이 없으면 '우리클럽'으로 간주 → 평소엔 영향 없음.
+            # 교류전 때 둘 이상의 클럽명이 들어오면 알고리즘이 같은 클럽끼리만 팀을 만든다.
+            club = "우리클럽"
+            if "클럽" in col_idx:
+                raw_club = row[col_idx["클럽"]]
+                if raw_club not in (None, ""):
+                    club = str(raw_club).strip() or "우리클럽"
+
             in_min = hhmm_to_min(row[col_idx["IN시간"]])
             out_min = hhmm_to_min(row[col_idx["OUT시간"]])
             if in_min >= out_min:
@@ -92,6 +100,7 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             "gender": "M" if gender == "남" else "F",
             "exp": exp,
             "membership": membership,
+            "club": club,
             "in_min": in_min,
             "out_min": out_min,
             "max_games": max_games,

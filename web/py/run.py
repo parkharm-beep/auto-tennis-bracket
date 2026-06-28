@@ -96,6 +96,7 @@ def _schedule(parsed: dict, seed: int, iters: int, candidates: int = 24) -> dict
             "gender": p["gender"],
             "exp": p["exp"],
             "membership": p["membership"],
+            "club": p.get("club", ""),
             "games": best_state["player_games"][pid],
             "available_slots": len(p["available_slots"]),
             "slots_played": slots,

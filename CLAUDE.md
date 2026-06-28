@@ -60,3 +60,4 @@ auto-tennis-bracket/
 | 2026-05-29 | `최대게임수` 컬럼 추가 (hard constraint) | 양식/parse/schedule/review/render | "이성돈 3게임만" 같은 개인별 제한 반영 |
 | 2026-05-29 | 디렉토리 규칙(`입력/`, `출력/`, `샘플/`) + 출력 파일명 자동 생성(YYMMDD) | 루트 + 대진표_생성.py/.bat | 루트 폴더 정리 요구 |
 | 2026-05-29 | 입력 양식 안내 시트에 7개 섹션으로 규칙 전체 정리 | build_template.py | 회원 공지용 자료 통합 |
+| 2026-06-28 | 교류전(클럽 대항) 지원: '클럽' 컬럼 추가, 같은 클럽끼리만 페어(hard)·상대는 다른 클럽 유도(soft), 클럽 2개+ 시 자동 작동 | 양식/parse/schedule/review/render + web/help.html | 다른 클럽과 교류전 시 클럽 내 페어링 요구 |

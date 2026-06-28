@@ -56,8 +56,8 @@ PREFILL_NOTE_FILL = PatternFill("solid", fgColor="FFF8DC")
 
 
 def _build_players_sheet(ws, prefill: str = ""):
-    headers = ["번호", "이름", "성별", "구력", "구분", "IN시간", "OUT시간", "최대게임수", "메모"]
-    widths = [6, 12, 8, 8, 12, 10, 10, 12, 28]
+    headers = ["번호", "이름", "성별", "구력", "구분", "클럽", "IN시간", "OUT시간", "최대게임수", "메모"]
+    widths = [6, 12, 8, 8, 12, 12, 10, 10, 12, 28]
     for col_idx, (title, w) in enumerate(zip(headers, widths), start=1):
         cell = ws.cell(row=1, column=col_idx, value=title)
         _style_header(cell)
@@ -67,10 +67,10 @@ def _build_players_sheet(ws, prefill: str = ""):
 
     for r in range(2, 32):
         ws.cell(row=r, column=1, value=r - 1)
-        for c in range(1, 10):
+        for c in range(1, 11):
             _style_body(ws.cell(row=r, column=c))
-        ws.cell(row=r, column=6).number_format = "@"
-        ws.cell(row=r, column=7).number_format = "@"
+        ws.cell(row=r, column=7).number_format = "@"  # IN시간
+        ws.cell(row=r, column=8).number_format = "@"  # OUT시간
 
         idx = r - 2
         if idx < len(prefill_rows):
@@ -79,15 +79,16 @@ def _build_players_sheet(ws, prefill: str = ""):
             if gender: ws.cell(row=r, column=3, value=gender)
             if exp != "" and exp is not None: ws.cell(row=r, column=4, value=exp)
             if mem: ws.cell(row=r, column=5, value=mem)
-            if in_t: ws.cell(row=r, column=6, value=in_t)
-            if out_t: ws.cell(row=r, column=7, value=out_t)
+            # 클럽(col 6)은 사전채움 비움 — 교류전 때만 직접 입력
+            if in_t: ws.cell(row=r, column=7, value=in_t)
+            if out_t: ws.cell(row=r, column=8, value=out_t)
             if max_g != "" and max_g is not None:
-                ws.cell(row=r, column=8, value=max_g)
-                ws.cell(row=r, column=8).fill = PREFILL_NOTE_FILL
-            if memo:
-                ws.cell(row=r, column=9, value=memo)
+                ws.cell(row=r, column=9, value=max_g)
                 ws.cell(row=r, column=9).fill = PREFILL_NOTE_FILL
-            for c in (3, 4, 5, 6, 7):
+            if memo:
+                ws.cell(row=r, column=10, value=memo)
+                ws.cell(row=r, column=10).fill = PREFILL_NOTE_FILL
+            for c in (3, 4, 5, 6, 7, 8):
                 if ws.cell(row=r, column=c).value in (None, ""):
                     ws.cell(row=r, column=c).fill = PREFILL_NOTE_FILL
 
@@ -143,6 +144,9 @@ def _build_guide_sheet(ws):
         ("• 성별: 드롭다운에서 '남' / '여' 선택 (필수)", False),
         ("• 구력: 테니스 경력 년수, 정수로 입력 — 예: 3, 10 (필수)", False),
         ("• 구분: '정회원' / '게스트' 선택 (필수)", False),
+        ("• 클럽: 평소엔 비워두세요(자동으로 '우리클럽'). 교류전 때만 클럽명 입력 (선택)", False),
+        ("    - 둘 이상의 클럽명이 들어오면 '교류전 모드'가 켜져 같은 클럽끼리만 한 팀이 됩니다", False),
+        ("    - 예: 우리 회원은 '우리클럽', 방문팀은 '○○클럽' 식으로 구분", False),
         ("• IN시간 / OUT시간: HH:MM 형식, 30분 단위 (예: 08:00, 08:30) (필수)", False),
         ("    - IN은 코트장에 들어올 수 있는 가장 빠른 시각", False),
         ("    - OUT은 코트장을 떠나야 하는 시각", False),
@@ -199,6 +203,13 @@ def _build_guide_sheet(ws):
         ("[H] 개인별 최대 게임수", True),
         ("• 최대게임수 칸에 정수 입력 시 정확히 그 수 이하로 배정 (hard 제약)", False),
         ("• 빈 칸이면 IN~OUT 범위 안에서 균형 배정", False),
+        ("", False),
+        ("[I] 교류전 (클럽 대항)", True),
+        ("• '클럽' 칸에 둘 이상의 클럽명이 있으면 교류전 모드 자동 작동", False),
+        ("• 한 팀(복식 2명)은 반드시 같은 클럽끼리 구성 (hard 제약)", False),
+        ("• 상대 팀은 다른 클럽이 되도록 유도 (우리 클럽 vs 상대 클럽)", False),
+        ("• 클럽 칸이 모두 비었거나 한 종류면 평소대로 동작 (영향 없음)", False),
+        ("• 주의: 한 슬롯에 같은 클럽 4명이 안 모이면 그 코트는 공석이 될 수 있음", False),
         ("", False),
         ("■ 4. 알고리즘이 회피 못 하는 입력 구조 (참고)", True),
         ("• 여자 인원이 4명 미만 → 여자복식 불가, 혼복만 가능", False),

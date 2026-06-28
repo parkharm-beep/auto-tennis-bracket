@@ -24,6 +24,7 @@ W = dict(
     no_member_guest_mix=1.0,
     court_affinity=25.0,
     female_early_slot=80.0,
+    same_club_opponent=300.0,  # 교류전(클럽 2개+): 상대가 같은 클럽이면 벌점 (다른 클럽끼리 경기 유도)
 )
 
 FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
@@ -39,13 +40,21 @@ def pair_key(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a < b else (b, a)
 
 
+def _same_club(a: dict, b: dict) -> bool:
+    """두 선수가 같은 클럽 소속인지. 클럽 정보 없으면 같은 것으로 간주."""
+    return a.get("club", "") == b.get("club", "")
+
+
 def init_state(players: list[dict]) -> dict:
+    distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     return {
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
         "pair_count": {},
         "type_count": {"M": 0, "F": 0, "X": 0},
+        # 클럽이 2개 이상이면 교류전 모드 — 상대 팀을 다른 클럽으로 유도.
+        "multi_club": len(distinct_clubs) > 1,
     }
 
 
@@ -120,6 +129,12 @@ def match_cost(
         if len(memberships) == 1:
             cost += W["no_member_guest_mix"]
 
+    # 교류전: 같은 팀은 같은 클럽으로 이미 보장됨(enumerate_candidates에서 필터).
+    # 여기서는 "상대 팀이 다른 클럽"을 유도 — 같은 클럽끼리 맞붙으면 벌점.
+    if state.get("multi_club"):
+        if team1[0].get("club", "") == team2[0].get("club", ""):
+            cost += W["same_club_opponent"]
+
     if court_name:
         affinity = COURT_AFFINITY.get(court_name.upper(), {}).get(match_type, 0.0)
         cost += W["court_affinity"] * affinity
@@ -175,6 +190,9 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
+                # 교류전: 같은 팀은 같은 클럽이어야 함 (다른 클럽 페어는 제외)
+                if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
+                    continue
                 c = match_cost(t1, t2, "M", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "M", t1, t2))
 
@@ -186,6 +204,8 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
+                if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
+                    continue
                 c = match_cost(t1, t2, "F", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "F", t1, t2))
 
@@ -199,6 +219,9 @@ def enumerate_candidates(
                     else:
                         t1 = (m_combo[0], f_combo[1])
                         t2 = (m_combo[1], f_combo[0])
+                    # 혼복도 같은 팀(남+여)은 같은 클럽이어야 함
+                    if not (_same_club(t1[0], t1[1]) and _same_club(t2[0], t2[1])):
+                        continue
                     c = match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name)
                     candidates.append((c, "X", t1, t2))
 
@@ -361,6 +384,7 @@ def main():
             "gender": p["gender"],
             "exp": p["exp"],
             "membership": p["membership"],
+            "club": p.get("club", ""),
             "games": best_state["player_games"][pid],
             "available_slots": len(p["available_slots"]),
             "slots_played": slots,
