@@ -62,3 +62,4 @@ auto-tennis-bracket/
 | 2026-05-29 | 입력 양식 안내 시트에 7개 섹션으로 규칙 전체 정리 | build_template.py | 회원 공지용 자료 통합 |
 | 2026-06-28 | 교류전(클럽 대항) 지원: '클럽' 컬럼 추가, 같은 클럽끼리만 페어(hard)·상대는 다른 클럽 유도(soft), 클럽 2개+ 시 자동 작동 | 양식/parse/schedule/review/render + web/help.html | 다른 클럽과 교류전 시 클럽 내 페어링 요구 |
 | 2026-06-28 | 결과 엑셀 게임수를 COUNTIF 수식화(수동 수정 시 자동 재계산) + 교류전 시 명단 패널 클럽별 2열 분리·클럽별 소계 | render_bracket.py | 대진표 수동 조정 반영 및 클럽별 게임수 구분 |
+| 2026-06-28 | 사전채움(`--prefill image`) 데이터를 실제 우리클럽 멤버 26명 명단으로 교체 + help.html 결과 엑셀 안내 추가 | build_template.py, web/help.html | 회원 제공 이미지 명단 반영 |
