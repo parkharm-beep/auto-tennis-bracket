@@ -24,9 +24,14 @@ W = dict(
     no_member_guest_mix=1.0,
     court_affinity=25.0,
     female_early_slot=80.0,
+    mixed_nonpriority=120.0,    # 교류전: 단성복식(남복/여복) 우선 — 단, 여복 페어가 반복되면 혼복도 허용
+    women_doubles_bonus=200.0,  # 교류전: 여복 우대(우선) — 양 클럽 여자 2+면 여복을 먼저, 다만 절대적이지 않아 혼복도 가능
 )
 
 FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
+
+# 교류전: 같은 클럽 안에서 (최대 게임수 - 최소 게임수) 격차를 이 값 이내로 제한.
+SPREAD_CAP = 2
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -46,21 +51,28 @@ def _same_club(a: dict, b: dict) -> bool:
 
 def init_state(players: list[dict]) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
-    club_members = {}
+    multi = len(distinct_clubs) > 1
+
+    # 게임수 균형 그룹: 교류전이면 (클럽, 성별)별로, 평소면 전체 1개 그룹.
+    # 교류전에서 인원 적은 성별(예: 여자 2명)이 상대적으로 더 뛰는 건 구조상 자연스러우므로
+    # 남녀를 섞어 비교하지 않고 같은 클럽·같은 성별끼리만 공평하게 맞춘다.
+    def bkey(p):
+        return (p.get("club", ""), p["gender"]) if multi else "__ALL__"
+    bal_members = {}
     for p in players:
-        club_members.setdefault(p.get("club", ""), []).append(p["id"])
+        bal_members.setdefault(bkey(p), []).append(p["id"])
     return {
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
         "pair_count": {},
         "type_count": {"M": 0, "F": 0, "X": 0},
-        # 클럽이 2개 이상이면 교류전 모드 — 상대 팀은 반드시 다른 클럽(하드), 게임수 균형은 클럽 내부 기준.
-        "multi_club": len(distinct_clubs) > 1,
-        "club_of": {p["id"]: p.get("club", "") for p in players},
-        "club_members": club_members,
-        "club_count": {c: len(ids) for c, ids in club_members.items()},
-        "club_game_sum": {c: 0 for c in club_members},
+        # 클럽이 2개 이상이면 교류전 모드 — 상대 팀은 반드시 다른 클럽(하드).
+        "multi_club": multi,
+        "bal_of": {p["id"]: bkey(p) for p in players},
+        "bal_members": bal_members,
+        "bal_count": {k: len(ids) for k, ids in bal_members.items()},
+        "bal_game_sum": {k: 0 for k in bal_members},
     }
 
 
@@ -69,9 +81,9 @@ def update_state(state: dict, match: dict) -> None:
     for p_id in match["team1"] + match["team2"]:
         state["player_games"][p_id] += 1
         state["player_slots"][p_id].append(match["slot_start"])
-        club = state.get("club_of", {}).get(p_id, "")
-        if club in state.get("club_game_sum", {}):
-            state["club_game_sum"][club] += 1
+        bk = state.get("bal_of", {}).get(p_id)
+        if bk in state.get("bal_game_sum", {}):
+            state["bal_game_sum"][bk] += 1
     for team in (match["team1"], match["team2"]):
         k = pair_key(team[0], team[1])
         state["pair_count"][k] = state["pair_count"].get(k, 0) + 1
@@ -118,22 +130,30 @@ def match_cost(
             cost += W["three_consec"]
 
     if state.get("multi_club"):
-        # 교류전: 게임수 균형은 각 클럽 '내부'에서만 평가 (클럽 간 차이는 허용)
+        # 교류전: 게임수 균형은 (클럽, 성별) 그룹 내부에서만 평가
         for p in all_players:
-            club = p.get("club", "")
-            cnt = state.get("club_count", {}).get(club, 1)
-            club_avg = state.get("club_game_sum", {}).get(club, 0) / max(1, cnt)
+            bk = state["bal_of"].get(p["id"])
+            cnt = state["bal_count"].get(bk, 1)
+            grp_avg = state["bal_game_sum"].get(bk, 0) / max(1, cnt)
             new_g = state["player_games"][p["id"]] + 1
-            cost += W["game_balance"] * (new_g - club_avg) ** 2
+            cost += W["game_balance"] * (new_g - grp_avg) ** 2
     elif state["player_games"]:
         avg_games = sum(state["player_games"].values()) / max(1, len(state["player_games"]))
         for p in all_players:
             new_g = state["player_games"][p["id"]] + 1
             cost += W["game_balance"] * (new_g - avg_games) ** 2
 
+    if match_type == "F" and state.get("multi_club"):
+        # 교류전: 여복(여자복식)을 최우선 — 양 클럽에 여자 2명 이상이면 혼복보다 여복.
+        # 구력 균형보다 앞서도록 큰 우대(음수 비용).
+        cost -= W["women_doubles_bonus"]
+
     if match_type == "X":
         if pool_males_count >= 4 or pool_females_count >= 4:
             cost += W["mixed_overuse"]
+        # 교류전: 단성 복식(남복/여복) 우선 — 혼복은 단성복식이 불가능할 때만.
+        if state.get("multi_club"):
+            cost += W["mixed_nonpriority"]
         for team in (team1, team2):
             male = team[0] if team[0]["gender"] == "M" else team[1]
             female = team[1] if team[0]["gender"] == "M" else team[0]
@@ -324,12 +344,26 @@ def run_one_seed(
 
     for slot in schedule_slots:
         played_here = set()
+        # 교류전: 클럽 내 게임수 상한 = (이 슬롯에 출전 가능한 같은 클럽 최소 게임수) + SPREAD_CAP.
+        # 한 사람이 같은 클럽 동료보다 너무 앞서 가지 못하게 해 클럽 내부 격차를 좁힌다.
+        club_floor = {}
+        if state.get("multi_club"):
+            club_games = {}
+            for p in players:
+                if slot["slot_start"] in p["available_slots"]:
+                    club_games.setdefault(p.get("club", ""), []).append(state["player_games"][p["id"]])
+            # floor = 최소 게임수. 단, 상대가 없어 못 뛰는 사람이 floor를 0으로 끌어내려
+            # 같은 클럽 동료까지 막지 않도록 (최대-SPREAD_CAP-1) 밑으로는 내려가지 않게 한다.
+            for c, gl in club_games.items():
+                club_floor[c] = max(min(gl), max(gl) - (SPREAD_CAP + 1))
         for court_name in slot["courts"]:
             pool = [
                 p for p in players
                 if slot["slot_start"] in p["available_slots"]
                 and p["id"] not in played_here
                 and (p.get("max_games") is None or state["player_games"][p["id"]] < p["max_games"])
+                and (not state.get("multi_club")
+                     or state["player_games"][p["id"]] - club_floor.get(p.get("club", ""), 0) < SPREAD_CAP)
             ]
             if len(pool) < 4:
                 continue
@@ -341,8 +375,8 @@ def run_one_seed(
 
     score = 0.0
     if state.get("multi_club"):
-        # 교류전: 클럽 '내부'에서만 게임수 균형을 평가 (클럽 간 차이는 허용)
-        for ids in state["club_members"].values():
+        # 교류전: (클럽, 성별) 그룹 내부에서만 게임수 균형을 평가
+        for ids in state["bal_members"].values():
             gs = [state["player_games"][i] for i in ids]
             if gs:
                 avg = sum(gs) / len(gs)

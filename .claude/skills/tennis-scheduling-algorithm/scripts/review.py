@@ -49,19 +49,22 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
     scores["games_max"] = max(games) if games else 0
     scores["games_avg"] = round(sum(games) / len(games), 2) if games else 0
 
-    # 교류전: 게임수 격차는 클럽 '내부' 기준으로 평가 (클럽 간 차이는 허용)
+    # 교류전: 게임수 격차는 (클럽, 성별) 그룹 내부 기준으로 평가 (클럽 간/성별 간 차이는 허용)
     within_gaps = []
-    for club in distinct_clubs:
-        gs = [s["games"] for s in player_stats if s.get("club", "") == club]
-        if gs:
-            within_gaps.append(max(gs) - min(gs))
+    if is_exchange:
+        gg = defaultdict(list)
+        for s in player_stats:
+            gg[(s.get("club", ""), s.get("gender"))].append(s["games"])
+        for vs in gg.values():
+            if vs:
+                within_gaps.append(max(vs) - min(vs))
     scores["game_gap_within_club"] = max(within_gaps, default=0)
 
     groups = defaultdict(list)
     for s in player_stats:
         if s.get("max_games") is not None:
             continue
-        key = (s.get("club", ""), s["available_slots"]) if is_exchange else s["available_slots"]
+        key = (s.get("club", ""), s.get("gender"), s["available_slots"]) if is_exchange else s["available_slots"]
         groups[key].append(s)
     group_gaps = []
     for grp_key, members in groups.items():
@@ -72,7 +75,7 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
         group_gaps.append((grp_key, gap))
         if gap > THRESHOLDS["game_gap_group"]:
             if is_exchange and isinstance(grp_key, tuple):
-                label = f"{grp_key[0]} · 가용슬롯 {grp_key[1]}개"
+                label = f"{grp_key[0]}/{grp_key[1]} · 가용슬롯 {grp_key[2]}개"
             else:
                 label = f"가용슬롯 {grp_key}개"
             issues.append({
@@ -240,13 +243,15 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
                            "msg": f"전체 게임수 격차 {scores['game_gap_global']} > {THRESHOLDS['game_gap_global']}"})
     if scores["max_group_gap"] > THRESHOLDS["game_gap_group"]:
         verdict = "RETRY"
-    if scores["pair_dup_rate"] > THRESHOLDS["pair_dup_rate"]:
+    # 교류전에선 페어 중복(여자 인원 적어 같은 페어 불가피)·구력차(여복을 구력 균형보다 우선)는
+    # RETRY 사유에서 제외하고 정보로만 표시.
+    if not is_exchange and scores["pair_dup_rate"] > THRESHOLDS["pair_dup_rate"]:
         verdict = "RETRY"
     if scores["three_consec_max_per_player"] > THRESHOLDS["three_consec_per_player"]:
         verdict = "RETRY"
-    if scores["team_skill_avg"] > THRESHOLDS["team_skill_avg"]:
+    if not is_exchange and scores["team_skill_avg"] > THRESHOLDS["team_skill_avg"]:
         verdict = "RETRY"
-    if scores["team_skill_max_normal"] > THRESHOLDS["team_skill_max"]:
+    if not is_exchange and scores["team_skill_max_normal"] > THRESHOLDS["team_skill_max"]:
         verdict = "RETRY"
     max_male_exp = max((p["exp"] for p in parsed["players"] if p["gender"] == "M"), default=0)
     max_female_exp = max((p["exp"] for p in parsed["players"] if p["gender"] == "F"), default=0)
@@ -259,6 +264,14 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
                 "severity": "low",
                 "code": "mixed_violation_structural",
                 "msg": f"여자 최고 구력({max_female_exp}년) > 남자 최고 구력({max_male_exp}년) — 혼복 규칙 위반은 입력 구조적 한계, 알고리즘이 회피 불가",
+            })
+        elif is_exchange:
+            # 교류전: 혼복은 여복 페어 반복을 줄이기 위한 보조 수단 — 구력 매칭이 항상 맞지는 않으므로
+            # RETRY 사유에서 제외하고 정보로만 표시.
+            issues.append({
+                "severity": "low",
+                "code": "mixed_violation_exchange",
+                "msg": f"교류전 혼복에서 남자 구력 < 여자 구력 {scores['mixed_skill_violations']}건 — 인원 사정상 일부 불가피",
             })
         else:
             verdict = "RETRY"
