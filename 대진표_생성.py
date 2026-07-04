@@ -49,6 +49,7 @@ SCRIPTS = {
     "parse_input":    SKILLS / "tennis-input-template" / "scripts" / "parse_input.py",
     "schedule":       SKILLS / "tennis-scheduling-algorithm" / "scripts" / "schedule.py",
     "review":         SKILLS / "tennis-scheduling-algorithm" / "scripts" / "review.py",
+    "history":        SKILLS / "tennis-scheduling-algorithm" / "scripts" / "history.py",
     "render_bracket": SKILLS / "tennis-excel-output"        / "scripts" / "render_bracket.py",
 }
 
@@ -58,6 +59,7 @@ SAMPLES_DIR = BASE / "샘플"
 DEFAULT_INPUT  = INPUT_DIR / "테니스_입력양식.xlsx"
 
 WORKSPACE = BASE / "_workspace"
+HISTORY_JSON = WORKSPACE / "00_history.json"
 PARSED_JSON  = WORKSPACE / "01_parsed.json"
 BRACKET_JSON = WORKSPACE / "02_bracket.json"
 REVIEW_JSON  = WORKSPACE / "03_review.json"
@@ -91,6 +93,75 @@ def _date_suffix(date_str: str) -> str:
 
 def _default_output(date_str: str) -> Path:
     return OUTPUT_DIR / f"테니스_대진표_{_date_suffix(date_str)}.xlsx"
+
+
+def _detect_prev_files(target_suffix: str) -> tuple[Path | None, Path | None]:
+    """출력/ 폴더에서 '테니스_대진표_YYYYMMDD.xlsx' 중 이번 대진표(target_suffix)보다
+    앞선 날짜의 파일 2개를 최신순으로 반환. (1주전, 2주전).
+    """
+    files = []
+    if OUTPUT_DIR.exists():
+        for f in OUTPUT_DIR.glob("테니스_대진표_*.xlsx"):
+            m = re.search(r"(\d{8})", f.stem)
+            if not m:
+                continue
+            ds = m.group(1)
+            if target_suffix and ds >= target_suffix:   # 이번 결과일/미래 파일 제외
+                continue
+            files.append((ds, f))
+    files.sort(key=lambda x: x[0], reverse=True)
+    d1 = files[0][1] if len(files) >= 1 else None
+    d2 = files[1][1] if len(files) >= 2 else None
+    return d1, d2
+
+
+def _prompt_prev(target_suffix: str) -> tuple[str | None, str | None]:
+    """대화형: 최근 대진표를 자동으로 찾아 보여주고 반영 여부를 묻는다."""
+    d1, d2 = _detect_prev_files(target_suffix)
+    print()
+    if d1 or d2:
+        print("최근 대진표 파일을 찾았습니다 (겹치는 페어를 피하는 데 사용):")
+        if d1:
+            print(f"  · 1주전(우선): {d1.name}")
+        if d2:
+            print(f"  · 2주전:       {d2.name}")
+        ans = input("이 대진표들과 겹치는 페어를 최대한 피할까요? "
+                    "(Y=반영 / M=파일 직접선택 / N=안함) [Y]: ").strip().lower()
+    else:
+        print("출력 폴더에서 이전 대진표를 자동으로 찾지 못했습니다.")
+        ans = input("이전 대진표 파일을 직접 지정할까요? (M=직접선택 / N=안함) [N]: ").strip().lower()
+
+    if ans in ("n", "no"):
+        return (None, None)
+    if ans in ("m", "manual") or (ans and ans not in ("y", "yes")):
+        p1 = input("  1주전 대진표 파일 경로 (없으면 Enter): ").strip().strip('"')
+        p2 = input("  2주전 대진표 파일 경로 (없으면 Enter): ").strip().strip('"')
+        return (p1 or None, p2 or None)
+    # 기본(Y/Enter) → 자동 감지한 파일 사용
+    return (str(d1) if d1 else None, str(d2) if d2 else None)
+
+
+def _resolve_prev(args, target_suffix: str) -> tuple[str | None, str | None]:
+    """이전 대진표(1주전/2주전) 경로를 결정. 우선순위: 명시 > --no-prev > --auto-prev > 대화형.
+
+    아무 것도 지정하지 않으면 반영하지 않는다(요구사항: 안 넣으면 고려 안 함).
+    """
+    if args.no_prev:
+        return (None, None)
+    if args.prev1 or args.prev2:
+        return (args.prev1, args.prev2)
+    if args.auto_prev:
+        d1, d2 = _detect_prev_files(target_suffix)
+        if d1:
+            print(f"[자동] 1주전 대진표: {d1.name}")
+        if d2:
+            print(f"[자동] 2주전 대진표: {d2.name}")
+        if not (d1 or d2):
+            print("[자동] 출력 폴더에서 이전 대진표를 찾지 못했습니다 — 페어 회피 없이 진행합니다.")
+        return (str(d1) if d1 else None, str(d2) if d2 else None)
+    if args.prompt_prev and sys.stdin.isatty():
+        return _prompt_prev(target_suffix)
+    return (None, None)
 
 
 def _run(label: str, cmd: list[str]) -> int:
@@ -133,10 +204,28 @@ def cmd_generate(args) -> int:
     out = Path(args.out) if args.out else _default_output(args.date)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    # 이전 대진표(1주전/2주전) 결정 → 겹치는 페어 회피용 히스토리 생성 (우리멤버끼리일 때만 실제 반영)
+    prev1, prev2 = _resolve_prev(args, _date_suffix(args.date))
+    history_arg: list = []
+    if prev1 or prev2:
+        hist_cmd = [SCRIPTS["history"]]
+        if prev1:
+            hist_cmd += ["--prev1", prev1]
+        if prev2:
+            hist_cmd += ["--prev2", prev2]
+        hist_cmd += ["--out", HISTORY_JSON]
+        rc = _run("0/4 이전 대진표 분석", hist_cmd)
+        if rc == 0 and HISTORY_JSON.exists():
+            history_arg = ["--history", HISTORY_JSON]
+        else:
+            print("[경고] 이전 대진표 히스토리 생성 실패 — 페어 회피 없이 진행합니다.")
+
     print("=" * 60)
     print(f"입력: {inp}")
     print(f"출력: {out}")
     print(f"시드: {args.seed}  반복: {args.iters}")
+    if history_arg:
+        print(f"이전대진표: 1주전={prev1 or '-'}  2주전={prev2 or '-'}")
     print("=" * 60)
 
     rc = _run("1/4 입력 파싱",
@@ -147,13 +236,13 @@ def cmd_generate(args) -> int:
 
     rc = _run("2/4 대진 생성",
               [SCRIPTS["schedule"], "--in", PARSED_JSON, "--out", BRACKET_JSON,
-               "--seed", str(args.seed), "--iters", str(args.iters)])
+               "--seed", str(args.seed), "--iters", str(args.iters), *history_arg])
     if rc != 0:
         return rc
 
     rc = _run("3/4 품질 검증",
               [SCRIPTS["review"], "--parsed", PARSED_JSON, "--bracket", BRACKET_JSON,
-               "--out", REVIEW_JSON])
+               "--out", REVIEW_JSON, *history_arg])
     if rc != 0:
         return rc
 
@@ -193,6 +282,14 @@ def main():
     p.add_argument("--iters", type=int, default=250, help="시드 반복 횟수")
     p.add_argument("--keep-prev", action="store_true",
                    help="기존 _workspace 보존 (_workspace_prev/로 이동)")
+    p.add_argument("--prev1", help="1주전 대진표 엑셀 경로 (겹치는 페어 회피, 우선순위 높음)")
+    p.add_argument("--prev2", help="2주전 대진표 엑셀 경로 (겹치는 페어 회피)")
+    p.add_argument("--auto-prev", action="store_true",
+                   help="출력/ 폴더에서 최근 대진표 2개를 자동으로 찾아 페어 회피에 반영")
+    p.add_argument("--prompt-prev", action="store_true",
+                   help="대화형으로 이전 대진표 반영 여부를 물음(자동 감지 + 확인). .bat 기본 흐름에서 사용")
+    p.add_argument("--no-prev", action="store_true",
+                   help="이전 대진표 페어 회피를 사용하지 않음(명시적으로 끔)")
     p.add_argument("--create-template", action="store_true",
                    help="대진표 생성 대신 빈 입력 양식만 생성")
     p.add_argument("--prefill", default="", choices=["", "image"],

@@ -3,6 +3,9 @@
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
 const fileEl = $("file");
+const prev1El = $("prev1");
+const prev2El = $("prev2");
+const prevClearBtn = $("prev-clear");
 const dateEl = $("date");
 const seedEl = $("seed");
 const itersEl = $("iters");
@@ -121,6 +124,14 @@ tplPrefillBtn.addEventListener("click", () => {
   worker.postMessage({ type: "template", payload: { prefill: "image" } });
 });
 
+if (prevClearBtn) {
+  prevClearBtn.addEventListener("click", () => {
+    prev1El.value = "";
+    prev2El.value = "";
+    log("이전 대진표 선택을 지웠습니다.");
+  });
+}
+
 runBtn.addEventListener("click", async () => {
   if (!workerReady) {
     log("아직 준비 중입니다. 잠시 후 다시 시도하세요.");
@@ -135,18 +146,32 @@ runBtn.addEventListener("click", async () => {
   summaryEl.innerHTML = "";
   log(`입력 파일: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`);
   const buf = await f.arrayBuffer();
+
+  const p1f = prev1El && prev1El.files[0];
+  const p2f = prev2El && prev2El.files[0];
+  const prev1 = p1f ? await p1f.arrayBuffer() : null;
+  const prev2 = p2f ? await p2f.arrayBuffer() : null;
+  if (p1f) log(`지난주 대진표: ${p1f.name}`);
+  if (p2f) log(`2주전 대진표: ${p2f.name}`);
+
+  const transfer = [buf];
+  if (prev1) transfer.push(prev1);
+  if (prev2) transfer.push(prev2);
+
   worker.postMessage(
     {
       type: "generate",
       payload: {
         bytes: buf,
+        prev1,
+        prev2,
         dateStr: dateEl.value || defaultDateStr(),
         seed: parseInt(seedEl.value, 10) || 7,
         iters: parseInt(itersEl.value, 10) || 150,
         title: titleEl.value || "우리 테니스 클럽 대진표",
       },
     },
-    [buf]
+    transfer
   );
 });
 
@@ -175,6 +200,13 @@ function handleDone({ xlsx, review, summary, elapsed }) {
       <p><strong>판정</strong>: <span class="verdict verdict-${v.toLowerCase()}">${v}</span></p>
       <p><strong>게임수</strong> 평균 ${s.games_avg} (min ${s.games_min} / max ${s.games_max}, 격차 ${s.game_gap_global})</p>
       <p><strong>페어 중복</strong> ${s.pair_dup_count}쌍 · <strong>3연속</strong> ${s.three_consec}건</p>
+      ${
+        summary.history_ignored_exchange
+          ? `<p><strong>지난 대진표 페어 회피</strong> 교류전이라 미적용</p>`
+          : summary.history_pairs
+          ? `<p><strong>지난 대진표 대비 반복 페어</strong> ${summary.history_repeat_pairs}쌍 (비교 대상 ${summary.history_pairs}쌍) — 적을수록 좋음</p>`
+          : ""
+      }
       ${
         summary.warnings && summary.warnings.length
           ? `<details><summary>경고 ${summary.warnings.length}건</summary><ul>${summary.warnings.map((w) => `<li>${w}</li>`).join("")}</ul></details>`

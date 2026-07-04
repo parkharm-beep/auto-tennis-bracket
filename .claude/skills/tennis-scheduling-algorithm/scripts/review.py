@@ -32,7 +32,7 @@ def pair_key(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a < b else (b, a)
 
 
-def compute_scores(parsed: dict, bracket: dict) -> dict:
+def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     matches = bracket["matches"]
     player_stats = bracket["player_stats"]
     players_by_id = {p["id"]: p for p in parsed["players"]}
@@ -114,6 +114,28 @@ def compute_scores(parsed: dict, bracket: dict) -> dict:
             "code": "pair_repeat",
             "msg": f"페어 중복: {n1}+{n2} ({cnt}회)",
         })
+
+    # 지난주/2주전 대비 반복 페어 (정보용 — 우리멤버끼리일 때만). RETRY 사유 아님.
+    hist_name_set = {pair_key(str(e[0]), str(e[1])) for e in (hist_pairs or []) if e and len(e) >= 2}
+    history_repeats = []
+    if hist_name_set and not is_exchange:
+        seen_rep = set()
+        for m in matches:
+            for names in (m.get("team1_names"), m.get("team2_names")):
+                if not names or len(names) < 2:
+                    continue
+                k = pair_key(str(names[0]), str(names[1]))
+                if k in hist_name_set:
+                    history_repeats.append(k)
+                    if k not in seen_rep:
+                        seen_rep.add(k)
+                        issues.append({
+                            "severity": "low",
+                            "code": "history_pair_repeat",
+                            "msg": f"지난 대진표와 겹친 페어: {k[0]}+{k[1]}",
+                        })
+    scores["history_pairs_available"] = len(hist_name_set)
+    scores["history_repeat_pairs"] = len(history_repeats)
 
     # 교류전 검증 (클럽이 2개 이상일 때만)
     scores["is_exchange"] = is_exchange
@@ -291,6 +313,9 @@ def print_report(review: dict) -> None:
     print(f"게임수: min={s['games_min']}, max={s['games_max']}, avg={s['games_avg']}, 전체격차={s['game_gap_global']}")
     print(f"가용슬롯 그룹 내 최대 격차: {s['max_group_gap']}")
     print(f"페어 중복: {s['pair_dup_count']}쌍 ({s['pair_dup_rate']*100:.1f}%)")
+    if s.get("history_pairs_available"):
+        print(f"지난 대진표 대비 반복 페어: {s.get('history_repeat_pairs', 0)}쌍 "
+              f"(비교 대상 {s['history_pairs_available']}쌍)")
     print(f"연속 출전: 2슬롯연속 {s['two_consec']}회, 3슬롯연속 {s['three_consec']}회")
     print(f"팀 구력차: 평균 {s['team_skill_avg']}, 최대 {s['team_skill_max']}")
     print(f"혼복 비율: {s['mixed_ratio']*100:.1f}%")
@@ -313,6 +338,8 @@ def main():
     ap.add_argument("--parsed", required=True)
     ap.add_argument("--bracket", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--history", default="",
+                    help="지난주/2주전 페어 히스토리 JSON (history.py 산출물). 겹침 페어 정보 표시용.")
     args = ap.parse_args()
 
     with open(args.parsed, "r", encoding="utf-8") as f:
@@ -320,7 +347,12 @@ def main():
     with open(args.bracket, "r", encoding="utf-8") as f:
         bracket = json.load(f)
 
-    review = compute_scores(parsed, bracket)
+    hist_pairs = None
+    if args.history and os.path.exists(args.history):
+        with open(args.history, "r", encoding="utf-8") as f:
+            hist_pairs = json.load(f).get("pairs", [])
+
+    review = compute_scores(parsed, bracket, hist_pairs)
     print_report(review)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

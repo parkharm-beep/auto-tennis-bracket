@@ -7,6 +7,7 @@ const PY_FILES = [
   "parse_input.py",
   "schedule.py",
   "review.py",
+  "history.py",
   "render_bracket.py",
   "build_template.py",
   "run.py",
@@ -84,19 +85,25 @@ _call_tpl
       return;
     }
     try {
-      const { bytes, dateStr, seed, iters, title } = payload;
-      postMessage({ type: "log", msg: `대진 생성 중 (시드 ${seed}, 반복 ${iters})…` });
+      const { bytes, prev1, prev2, dateStr, seed, iters, title } = payload;
+      const prevNote = prev1 || prev2 ? " · 지난 대진표 페어 회피 반영" : "";
+      postMessage({ type: "log", msg: `대진 생성 중 (시드 ${seed}, 반복 ${iters})${prevNote}…` });
 
       const callGen = pyodide.runPython(`
-def _call(input_buf, date_str, seed, iters, title):
+def _call(input_buf, date_str, seed, iters, title, prev1, prev2):
     import run
-    return run.generate_bracket(bytes(input_buf), date_str=date_str, seed=seed, iters=iters, title=title)
+    return run.generate_bracket_json_result(
+        input_buf, date_str=date_str, seed=seed, iters=iters, title=title,
+        prev1_bytes=prev1, prev2_bytes=prev2,
+    )
 _call
       `);
 
       const u8 = new Uint8Array(bytes);
+      const p1 = prev1 ? new Uint8Array(prev1) : null;
+      const p2 = prev2 ? new Uint8Array(prev2) : null;
       const t0 = performance.now();
-      const py_result = callGen(u8, dateStr, seed, iters, title);
+      const py_result = callGen(u8, dateStr, seed, iters, title, p1, p2);
       const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
 
       const result = py_result.toJs({ dict_converter: Object.fromEntries });

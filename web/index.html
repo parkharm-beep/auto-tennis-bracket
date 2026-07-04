@@ -91,6 +91,21 @@
       </div>
     </div>
     <div class="row" style="margin-top:10px;">
+      <div class="field w-mid">
+        <label>지난주 대진표 (선택 · 우선)</label>
+        <input type="file" id="prev1" accept=".xlsx" />
+      </div>
+      <div class="field w-mid">
+        <label>2주전 대진표 (선택)</label>
+        <input type="file" id="prev2" accept=".xlsx" />
+      </div>
+      <button id="prev-clear" class="secondary" type="button" title="선택한 이전 대진표 파일 지우기">지우기</button>
+    </div>
+    <p class="note" style="margin-top:4px;">
+      이전 대진표(생성됐던 결과 엑셀)를 올리면 그때 <strong>같은 팀이었던 페어</strong>를 이번 주에 최대한 피합니다.
+      우선순위는 지난주 &gt; 2주전. <strong>우리 멤버끼리 짤 때만</strong> 적용되며, 타 클럽 교류전이면 자동으로 무시됩니다. 안 올리면 반영하지 않습니다.
+    </p>
+    <div class="row" style="margin-top:10px;">
       <div class="field w-long" style="flex:1;">
         <label>제목</label>
         <input type="text" id="title" value="우리 테니스 클럽 대진표" />

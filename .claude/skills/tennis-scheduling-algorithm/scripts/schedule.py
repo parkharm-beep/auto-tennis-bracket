@@ -26,6 +26,7 @@ W = dict(
     female_early_slot=80.0,
     mixed_nonpriority=120.0,    # 교류전: 단성복식(남복/여복) 우선 — 단, 여복 페어가 반복되면 혼복도 허용
     women_doubles_bonus=200.0,  # 교류전: 여복 우대(우선) — 양 클럽 여자 2+면 여복을 먼저, 다만 절대적이지 않아 혼복도 가능
+    history_pair_repeat=40.0,   # 지난주/2주전과 같은 페어 회피(소프트). 우리멤버끼리(단일클럽)일 때만 적용, 교류전 제외.
 )
 
 FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
@@ -49,9 +50,32 @@ def _same_club(a: dict, b: dict) -> bool:
     return a.get("club", "") == b.get("club", "")
 
 
-def init_state(players: list[dict]) -> dict:
+def build_hist_penalty(players: list[dict], hist_pairs) -> dict:
+    """이름쌍 히스토리([[nameA, nameB, weight], ...]) → 이번 주 id 기준 페어 패널티 맵.
+
+    참가자 id는 매주 새로 매겨지므로 과거 페어는 이름으로만 매칭한다.
+    이번 주 명단에 없는 사람이 낀 페어는 자연히 무시된다(둘 다 있어야 매핑).
+    """
+    name_to_id = {p["name"]: p["id"] for p in players}
+    pen: dict = {}
+    for entry in hist_pairs or []:
+        if not entry or len(entry) < 2:
+            continue
+        a, b = entry[0], entry[1]
+        w = float(entry[2]) if len(entry) > 2 else 1.0
+        ida, idb = name_to_id.get(a), name_to_id.get(b)
+        if ida and idb and ida != idb:
+            k = pair_key(ida, idb)
+            pen[k] = pen.get(k, 0.0) + w
+    return pen
+
+
+def init_state(players: list[dict], hist_pairs=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
+
+    # 지난주/2주전 페어 회피는 '우리 멤버끼리(단일 클럽)'일 때만 적용. 교류전(다클럽)에선 무시.
+    hist_pair_penalty = {} if multi else build_hist_penalty(players, hist_pairs)
 
     # 게임수 균형 그룹: 교류전이면 (클럽, 성별)별로, 평소면 전체 1개 그룹.
     # 교류전에서 인원 적은 성별(예: 여자 2명)이 상대적으로 더 뛰는 건 구조상 자연스러우므로
@@ -73,6 +97,7 @@ def init_state(players: list[dict]) -> dict:
         "bal_members": bal_members,
         "bal_count": {k: len(ids) for k, ids in bal_members.items()},
         "bal_game_sum": {k: 0 for k in bal_members},
+        "hist_pair_penalty": hist_pair_penalty,
     }
 
 
@@ -122,6 +147,14 @@ def match_cost(
         prev = state["pair_count"].get(k, 0)
         if prev > 0:
             cost += W["pair_repeat"] * (prev * prev + 1)
+
+    # 지난주/2주전과 같은 페어 회피 (단일 클럽일 때만 채워짐). 가중치: 1주전 > 2주전.
+    hist_pen = state.get("hist_pair_penalty")
+    if hist_pen:
+        for team in (team1, team2):
+            w = hist_pen.get(pair_key(team[0]["id"], team[1]["id"]))
+            if w:
+                cost += W["history_pair_repeat"] * w
 
     for p in all_players:
         if is_two_streak(p["id"], slot_start, state):
@@ -337,9 +370,10 @@ def run_one_seed(
     schedule_slots: list[dict],
     seed: int,
     candidate_top_n: int,
+    hist_pairs=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
-    state = init_state(players)
+    state = init_state(players, hist_pairs)
     players_by_id = {p["id"]: p for p in players}
 
     for slot in schedule_slots:
@@ -392,6 +426,16 @@ def run_one_seed(
     pair_dups = sum(c - 1 for c in state["pair_count"].values() if c > 1)
     score += pair_dups * 30.0
 
+    # 시드 선택 시에도 지난주/2주전 반복 페어가 적은 대진표를 선호하도록 점수에 반영.
+    hist_pen = state.get("hist_pair_penalty")
+    if hist_pen:
+        hist_rep = 0.0
+        for k, cnt in state["pair_count"].items():
+            w = hist_pen.get(k)
+            if w:
+                hist_rep += w * cnt
+        score += hist_rep * 30.0
+
     three_streak = 0
     two_streak = 0
     for p_id, slots in state["player_slots"].items():
@@ -428,6 +472,8 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--iters", type=int, default=80)
     ap.add_argument("--candidates", type=int, default=24)
+    ap.add_argument("--history", default="",
+                    help="지난주/2주전 페어 회피용 히스토리 JSON (history.py 산출물). 단일 클럽일 때만 반영.")
     args = ap.parse_args()
 
     with open(args.inp, "r", encoding="utf-8") as f:
@@ -436,11 +482,22 @@ def main():
     players = data["players"]
     schedule_slots = data["schedule_slots"]
 
+    hist_pairs = None
+    if args.history and os.path.exists(args.history):
+        with open(args.history, "r", encoding="utf-8") as f:
+            hist_pairs = json.load(f).get("pairs", [])
+        distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
+        if len(distinct_clubs) > 1:
+            print(f"[안내] 교류전(클럽 {len(distinct_clubs)}개)이라 지난주 페어 회피는 적용하지 않습니다.")
+        else:
+            applied = build_hist_penalty(players, hist_pairs)
+            print(f"[안내] 지난주 페어 회피 반영: 히스토리 {len(hist_pairs)}쌍 중 이번 주 명단과 겹치는 {len(applied)}쌍 회피 대상.")
+
     best_state, best_score = None, float("inf")
     best_seed = args.seed
     for i in range(args.iters):
         seed = args.seed + i
-        state, score = run_one_seed(players, schedule_slots, seed, args.candidates)
+        state, score = run_one_seed(players, schedule_slots, seed, args.candidates, hist_pairs)
         if score < best_score:
             best_state, best_score = state, score
             best_seed = seed

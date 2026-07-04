@@ -29,7 +29,8 @@ echo.
 echo 입력 양식: 입력\테니스_입력양식.xlsx
 echo.
 set /p DATE_STR="대진표 날짜 (예: 26.5.30, 비우면 오늘): "
-python "%~dp0대진표_생성.py" --date "%DATE_STR%"
+REM --prompt-prev: 최근 대진표를 자동으로 찾아 '겹치는 페어 피하기' 반영 여부를 물어봅니다.
+python "%~dp0대진표_생성.py" --date "%DATE_STR%" --prompt-prev
 goto END
 
 :HELP

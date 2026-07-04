@@ -29,3 +29,4 @@ Thumbs.db
 # 노드 (StatiCrypt 등)
 node_modules/
 package-lock.json
+.gstack/

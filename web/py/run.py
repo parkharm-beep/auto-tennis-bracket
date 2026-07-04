@@ -21,6 +21,7 @@ from schedule import run_one_seed
 from review import compute_scores
 from render_bracket import render
 from build_template import build_template
+from history import extract_pairs_from_bracket_xlsx, DEFAULT_W1, DEFAULT_W2
 
 
 def _parse_bytes(xlsx_bytes: bytes) -> dict:
@@ -74,12 +75,44 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
     }
 
 
-def _schedule(parsed: dict, seed: int, iters: int, candidates: int = 24) -> dict:
+def _to_bytes(x):
+    """Pyodide에서 넘어온 JS Uint8Array/버퍼 또는 bytes를 파이썬 bytes로 정규화. None은 그대로."""
+    if x is None:
+        return None
+    if hasattr(x, "to_py"):
+        x = x.to_py()
+    if isinstance(x, (bytes, bytearray)):
+        return bytes(x)
+    try:
+        return bytes(x)
+    except TypeError:
+        return None
+
+
+def _build_hist_pairs(prev_specs) -> list:
+    """prev_specs = [(xlsx_bytes|None, weight), ...] (우선순위 높은 것 먼저).
+
+    각 이전 대진표 엑셀에서 같은 팀 페어를 뽑아 가중치 합산한 [[a, b, w], ...]를 만든다.
+    """
+    weighted: dict = {}
+    for raw, weight in prev_specs:
+        b = _to_bytes(raw)
+        if not b:
+            continue
+        try:
+            for k in extract_pairs_from_bracket_xlsx(BytesIO(b)):
+                weighted[k] = weighted.get(k, 0.0) + weight
+        except Exception:
+            continue
+    return [[a, b, round(w, 4)] for (a, b), w in weighted.items()]
+
+
+def _schedule(parsed: dict, seed: int, iters: int, candidates: int = 24, hist_pairs=None) -> dict:
     best_state, best_score = None, float("inf")
     best_seed = seed
     for i in range(iters):
         s = seed + i
-        state, score = run_one_seed(parsed["players"], parsed["schedule_slots"], s, candidates)
+        state, score = run_one_seed(parsed["players"], parsed["schedule_slots"], s, candidates, hist_pairs)
         if score < best_score:
             best_state, best_score = state, score
             best_seed = s
@@ -119,18 +152,26 @@ def generate_bracket(
     seed: int = 7,
     iters: int = 150,
     title: str = "우리 테니스 클럽 대진표",
+    prev1_bytes=None,
+    prev2_bytes=None,
 ) -> dict:
     """입력 엑셀 bytes → {xlsx: bytes, review: dict, summary: dict}.
 
+    prev1_bytes(1주전)/prev2_bytes(2주전)를 주면 그 대진표들과 겹치는 페어를 최대한 피한다.
+    (우리 멤버끼리일 때만 실제 반영 — 교류전이면 자동 무시)
     브라우저에서 호출 후 xlsx 필드를 Blob으로 만들어 다운로드.
     """
     parsed = _parse_bytes(xlsx_bytes)
-    bracket = _schedule(parsed, seed, iters)
-    review = compute_scores(parsed, bracket)
+    hist_pairs = _build_hist_pairs([(prev1_bytes, DEFAULT_W1), (prev2_bytes, DEFAULT_W2)])
+    bracket = _schedule(parsed, seed, iters, hist_pairs=hist_pairs)
+    review = compute_scores(parsed, bracket, hist_pairs)
 
     out_buf = BytesIO()
     render(parsed, bracket, out_buf, date_str, title)
     out_buf.seek(0)
+
+    distinct_clubs = {p.get("club", "") for p in parsed["players"] if p.get("club", "")}
+    is_exchange = len(distinct_clubs) > 1
 
     return {
         "xlsx_bytes": out_buf.getvalue(),
@@ -141,6 +182,9 @@ def generate_bracket(
             "slots": len(parsed["schedule_slots"]),
             "matches": len(bracket["matches"]),
             "warnings": parsed["warnings"],
+            "history_pairs": len(hist_pairs),
+            "history_repeat_pairs": review["scores"].get("history_repeat_pairs", 0),
+            "history_ignored_exchange": bool(hist_pairs) and is_exchange,
         },
     }
 
@@ -153,13 +197,15 @@ def build_empty_template_bytes(prefill: str = "") -> bytes:
     return buf.getvalue()
 
 
-def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=150, title="우리 테니스 클럽 대진표"):
+def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=150,
+                                 title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None):
     """Pyodide JS 호출용 wrapper. JS의 Uint8Array를 받아 dict 반환.
 
     xlsx 결과는 별도 함수로 가져가도록 분리하지 않고, 결과 dict에 bytes 그대로 포함.
+    prev1_bytes/prev2_bytes(있으면)로 지난주/2주전 페어를 회피.
     """
-    if hasattr(xlsx_bytes_bin, "to_py"):
-        xlsx_bytes_bin = xlsx_bytes_bin.to_py()
-    if not isinstance(xlsx_bytes_bin, (bytes, bytearray)):
-        xlsx_bytes_bin = bytes(xlsx_bytes_bin)
-    return generate_bracket(bytes(xlsx_bytes_bin), date_str=date_str, seed=seed, iters=iters, title=title)
+    main_bytes = _to_bytes(xlsx_bytes_bin)
+    return generate_bracket(
+        main_bytes, date_str=date_str, seed=seed, iters=iters, title=title,
+        prev1_bytes=prev1_bytes, prev2_bytes=prev2_bytes,
+    )
