@@ -281,9 +281,9 @@ def main():
     p.add_argument("--title", default="우리 테니스 클럽 이번 주 대진표")
     p.add_argument("--seed", type=int, default=7, help="알고리즘 시드")
     p.add_argument("--iters", type=int, default=40, help="시드 반복 횟수(초안 생성)")
-    p.add_argument("--refine", type=int, default=10,
+    p.add_argument("--refine", type=int, default=6,
                    help="상위 N개 초안을 로컬 개선(공백/대기 줄이기)으로 다듬음")
-    p.add_argument("--kicks", type=int, default=60,
+    p.add_argument("--kicks", type=int, default=40,
                    help="로컬 개선의 무작위 교란 횟수 — 크게 하면 품질↑ 시간↑")
     p.add_argument("--keep-prev", action="store_true",
                    help="기존 _workspace 보존 (_workspace_prev/로 이동)")

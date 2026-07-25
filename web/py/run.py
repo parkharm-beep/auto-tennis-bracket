@@ -115,8 +115,8 @@ def generate_bracket(
     title: str = "우리 테니스 클럽 대진표",
     prev1_bytes=None,
     prev2_bytes=None,
-    refine: int = 6,
-    kicks: int = 40,
+    refine: int = 4,
+    kicks: int = 25,
 ) -> dict:
     """입력 엑셀 bytes → {xlsx: bytes, review: dict, summary: dict}.
 
@@ -168,7 +168,7 @@ def build_empty_template_bytes(prefill: str = "") -> bytes:
 
 def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=20,
                                  title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None,
-                                 refine=6, kicks=40):
+                                 refine=4, kicks=25):
     """Pyodide JS 호출용 wrapper. JS의 Uint8Array를 받아 dict 반환.
 
     xlsx 결과는 별도 함수로 가져가도록 분리하지 않고, 결과 dict에 bytes 그대로 포함.

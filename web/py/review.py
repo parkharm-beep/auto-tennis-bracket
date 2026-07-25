@@ -118,6 +118,25 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
             "msg": f"페어 중복: {n1}+{n2} ({cnt}회)",
         })
 
+    # 같은 4명 재대결: 편만 바꿔 다시(quad) / 상대편까지 그대로(matchup)
+    quad_count, matchup_count = defaultdict(int), defaultdict(int)
+    for m in matches:
+        t1, t2 = tuple(sorted(m["team1"])), tuple(sorted(m["team2"]))
+        quad_count[tuple(sorted(t1 + t2))] += 1
+        matchup_count[(t1, t2) if t1 < t2 else (t2, t1)] += 1
+    scores["quad_repeats"] = sum(c - 1 for c in quad_count.values() if c > 1)
+    scores["matchup_repeats"] = sum(c - 1 for c in matchup_count.values() if c > 1)
+    for k, c in matchup_count.items():
+        if c > 1:
+            names = " / ".join(
+                "+".join(players_by_id[i]["name"] for i in team) for team in k
+            )
+            issues.append({
+                "severity": "high",
+                "code": "matchup_repeat",
+                "msg": f"완전 중복 대진: {names} — 같은 4명이 같은 편으로 {c}회 (인원 사정상 불가피할 수 있음)",
+            })
+
     # 지난주/2주전 대비 반복 페어 (정보용 — 우리멤버끼리일 때만). RETRY 사유 아님.
     hist_name_set = {pair_key(str(e[0]), str(e[1])) for e in (hist_pairs or []) if e and len(e) >= 2}
     history_repeats = []
@@ -358,6 +377,7 @@ def print_report(review: dict) -> None:
     print(f"게임수: min={s['games_min']}, max={s['games_max']}, avg={s['games_avg']}, 전체격차={s['game_gap_global']}")
     print(f"가용슬롯 그룹 내 최대 격차: {s['max_group_gap']}")
     print(f"페어 중복: {s['pair_dup_count']}쌍 ({s['pair_dup_rate']*100:.1f}%)")
+    print(f"같은 4명 재대결: 편 바꿔 {s.get('quad_repeats', 0)}회 / 상대편까지 그대로 {s.get('matchup_repeats', 0)}회")
     if s.get("history_pairs_available"):
         print(f"지난 대진표 대비 반복 페어: {s.get('history_repeat_pairs', 0)}쌍 "
               f"(비교 대상 {s['history_pairs_available']}쌍)")

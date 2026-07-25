@@ -25,16 +25,19 @@ W = dict(
     mixed_skill_rule_violation=1000.0,
     no_member_guest_mix=1.0,
     court_affinity=25.0,
-    female_early_slot=80.0,
+    female_early_slot=200.0,    # 여성 07:30 이전 슬롯 배정 (1명당) — 사실상 회피
     mixed_nonpriority=120.0,    # 교류전: 단성복식(남복/여복) 우선 — 단, 여복 페어가 반복되면 혼복도 허용
     women_doubles_bonus=200.0,  # 교류전: 여복 우대(우선) — 양 클럽 여자 2+면 여복을 먼저, 다만 절대적이지 않아 혼복도 가능
     history_pair_repeat=30.0,   # 지난주/2주전과 같은 페어 회피(소프트). 우리멤버끼리(단일클럽)일 때만 적용, 교류전 제외.
                                 # 같은주 중복페어 유효비용(pair_repeat 20 → 첫 중복 40)보다 낮게 둔다:
                                 # 지난주 회피 때문에 이번 주 안에서 같은 짝을 반복하는 자기모순을 막기 위함.
+    quad_repeat=15.0,           # 같은 4명이 편만 바꿔 다시 만남 (약하게)
+    matchup_repeat=90.0,        # 같은 4명이 '상대편까지 그대로' 다시 만남 (강하게)
     single_mixed_nonpriority=70.0,
     # ↑ 평소(단일 클럽)에도 남복/여복 우선. 혼복은 '단성 복식이 가능한데도' 고를 때만 페널티.
     #   페어 중복 첫 발생 비용(pair_repeat 20 → 40)보다 크게 두어, 페어가 한 번 겹치는 정도는
     #   혼복보다 낫다고 보고, 두 번 이상 겹칠 상황(20*(4+1)=100)이면 혼복을 차선책으로 허용한다.
+    gender_catchup=25.0,        # 평균보다 뒤처진 성별을 먼저 투입 (뒤처진 게임수 1당, 음수 비용)
     idle_urgency=14.0,
     # ↑ 오래 쉰 사람을 먼저 투입(음수 비용). '1시간 이상 공백'을 만들기 전에 되돌리는 힘.
     #   쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 생기지 않는다.
@@ -52,17 +55,28 @@ MIXED_TOP = 5                   # 혼복 조합에 쓸 남/여 인원
 G = dict(
     balance_sq=12.0,
     balance_spread=30.0,
-    balance_under=400.0,        # 공평 기준보다 1게임 넘게 덜 뛰는 사람 (초과분)^2 — 사실상 금지
+    balance_under=400.0,        # 공평 기준(내림)보다도 덜 뛰는 사람 (부족분)^2 — 사실상 금지
+    balance_short=170.0,        # 공평 기준에 0.5게임 넘게 못 미치는 사람 (초과분)^2
+    gender_fairness=420.0,      # 한쪽 성별 평균이 전체 평균보다 낮게 굳는 것을 방지 (초과분)^2
+    # ↑ 여자가 4명뿐이면 여복은 '4명 통째'로만 늘어나므로, 개인 단위 균형만으로는
+    #   "부족분 몫을 항상 여자 4명이 진다"가 비용상 동점이 되어 그대로 채택된다.
+    #   성별 그룹 평균까지 보게 해서 그 쏠림을 깬다.
     pair_dup=30.0,
+    quad_repeat=25.0,           # 같은 4명이 편만 바꿔 재대결
+    matchup_repeat=220.0,       # 같은 4명이 상대편까지 그대로 재대결 — 혼복 1~2판보다 나쁘다고 본다
     history_pair=30.0,
     three_streak=400.0,
     two_streak=2.0,
-    mixed_match=45.0,           # 평소: 혼복 1경기당 페널티 (남복/여복 우선)
+    mixed_match=20.0,           # 허용량 이내의 혼복 1경기당 페널티
+    mixed_over_quota=220.0,     # 허용량을 넘는 혼복 (초과 경기수)^2 — 사실상 상한
+    # ↑ 혼복 억제의 주 장치는 그리디의 single_mixed_nonpriority(중복 없는 단성 복식이
+    #   가능할 때만 부과)다. 여기서 과하게 잡으면 '단성 복식이 더 못 나오는 상황'에서도
+    #   혼복이 막혀 여자 게임수가 깎이므로 낮게 둔다.
     women_doubles_bonus=100.0,  # 교류전: 여복 1경기당 보너스
     team_skill_diff=4.0,
     mixed_skill_violation=1000.0,
     court_affinity=10.0,
-    female_early=80.0,
+    female_early=200.0,
     member_guest=1.0,
     gap=4.0,                    # 경기 사이 공백 30분당
     long_gap=150.0,             # 경기 사이 공백이 1시간 이상일 때 (초과 30분 단위)^2 — 최우선 회피
@@ -78,6 +92,10 @@ FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
 # 교류전: 같은 클럽 안에서 (최대 게임수 - 최소 게임수) 격차를 이 값 이내로 제한.
 SPREAD_CAP = 2
 
+# 교류전에서 허용하는 혼복 경기 수. 한쪽 클럽 여자가 2~3명이면 여복 페어가 사실상 고정되어
+# 같은 대진이 반복되므로, 그 완충으로 1~2판은 열어 둔다.
+EXCHANGE_MIXED_QUOTA = 2
+
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
     "B": {"M": 0.0, "F": 1.0, "X": 1.0},
@@ -86,6 +104,21 @@ COURT_AFFINITY = {
 
 
 def pair_key(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a < b else (b, a)
+
+
+def quad_key(t1, t2) -> tuple:
+    """같은 4명이 다시 만났는지 판별하는 키 (편 구성 무관)."""
+    return tuple(sorted([t1[0], t1[1], t2[0], t2[1]]))
+
+
+def matchup_key(t1, t2) -> tuple:
+    """같은 4명이 '같은 편 구성'으로 다시 만났는지 판별하는 키.
+
+    페어(2명)뿐 아니라 상대편까지 그대로 반복되는, 가장 재미없는 중복.
+    """
+    a = tuple(sorted(t1))
+    b = tuple(sorted(t2))
     return (a, b) if a < b else (b, a)
 
 
@@ -132,7 +165,36 @@ def build_hist_penalty(players: list[dict], hist_pairs) -> dict:
     return pen
 
 
-def init_state(players: list[dict], hist_pairs=None) -> dict:
+def mixed_quota(players: list[dict], schedule_slots: list[dict] | None) -> int:
+    """'남복/여복 우선' 원칙을 지키면서도 허용할 혼복 경기 수.
+
+    소수 성별이 정확히 4~5명이면 중복 없는 단성 복식을 몇 판밖에 못 만든다
+    (여자 4명 → 편 가르는 방법이 3가지뿐 → 여복 3판이 한계).
+    그 이상 뛰려면 같은 4명이 상대편까지 똑같이 다시 붙어야 하므로,
+    모자란 게임수만큼만 혼복으로 채운다. 그 이상은 원칙대로 페널티.
+    """
+    n = len(players)
+    n_m = sum(1 for p in players if p["gender"] == "M")
+    n_f = n - n_m
+    minority = min(n_m, n_f)
+    if minority < 4:
+        return 10 ** 6          # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
+    if minority >= 6:
+        return 0                # 단성 복식만으로 충분히 다양하게 짤 수 있다
+    clean_singles_max = 3 if minority == 4 else 6   # 중복 없이 만들 수 있는 단성 복식 판수
+
+    total_matches = 0
+    for sl in (schedule_slots or []):
+        n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
+        total_matches += min(len(sl["courts"]), n_avail // 4)
+    if not total_matches or not n:
+        return 0
+    target = round(4 * total_matches / n)           # 1인당 공평 게임수
+    need = max(0, target - clean_singles_max)       # 단성 복식만으로 못 채우는 게임수
+    return -(-minority * need // 2)                 # 혼복 1판이 소수 성별 2명을 태운다
+
+
+def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
 
@@ -152,6 +214,8 @@ def init_state(players: list[dict], hist_pairs=None) -> dict:
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
         "pair_count": {},
+        "quad_count": {},      # 같은 4명이 다시 만난 횟수 (편 구성 무관)
+        "matchup_count": {},   # 같은 4명이 같은 편 구성으로 다시 만난 횟수
         "type_count": {"M": 0, "F": 0, "X": 0},
         # 클럽이 2개 이상이면 교류전 모드 — 상대 팀은 반드시 다른 클럽(하드).
         "multi_club": multi,
@@ -159,13 +223,22 @@ def init_state(players: list[dict], hist_pairs=None) -> dict:
         "bal_members": bal_members,
         "bal_count": {k: len(ids) for k, ids in bal_members.items()},
         "bal_game_sum": {k: 0 for k in bal_members},
+        # 성별 그룹이 전체 평균보다 뒤처지지 않게 하는 용도 (평소=단일 클럽에서만 사용)
+        "gender_count": {g: sum(1 for p in players if p["gender"] == g) for g in ("M", "F")},
+        "gender_sum": {"M": 0, "F": 0},
         "hist_pair_penalty": hist_pair_penalty,
         "eff_in": build_eff_in(players),
+        # 교류전은 (클럽, 성별)별 인원이 제각각이라 단순 계산 대신 고정 허용량을 쓴다.
+        # (한쪽 클럽 여자가 2명이면 여복 페어가 아예 고정되므로 완충이 반드시 필요)
+        "mixed_quota": EXCHANGE_MIXED_QUOTA if multi else mixed_quota(players, schedule_slots),
     }
 
 
 def update_state(state: dict, match: dict) -> None:
     state["matches"].append(match)
+    n_f = 2 if match["type"] == "X" else (4 if match["type"] == "F" else 0)
+    state["gender_sum"]["F"] += n_f
+    state["gender_sum"]["M"] += 4 - n_f
     for p_id in match["team1"] + match["team2"]:
         state["player_games"][p_id] += 1
         state["player_slots"][p_id].append(match["slot_start"])
@@ -175,6 +248,10 @@ def update_state(state: dict, match: dict) -> None:
     for team in (match["team1"], match["team2"]):
         k = pair_key(team[0], team[1])
         state["pair_count"][k] = state["pair_count"].get(k, 0) + 1
+    qk = quad_key(match["team1"], match["team2"])
+    state["quad_count"][qk] = state["quad_count"].get(qk, 0) + 1
+    mk = matchup_key(match["team1"], match["team2"])
+    state["matchup_count"][mk] = state["matchup_count"].get(mk, 0) + 1
     state["type_count"][match["type"]] += 1
 
 
@@ -197,6 +274,7 @@ def match_cost(
     pool_males_count: int,
     pool_females_count: int,
     court_name: str = "",
+    mixed_is_fallback: bool = False,
 ) -> float:
     cost = 0.0
     all_players = list(team1) + list(team2)
@@ -211,6 +289,17 @@ def match_cost(
         if prev > 0:
             cost += W["pair_repeat"] * (prev * prev + 1)
 
+    # 같은 4명이 또 만나는 것 — 특히 '상대편까지 그대로'인 완전 중복은 강하게 회피.
+    # (여자가 4명뿐이면 여복 4판째에 반드시 발생 → 이때 혼복이 차선책으로 열린다)
+    t1_ids = (team1[0]["id"], team1[1]["id"])
+    t2_ids = (team2[0]["id"], team2[1]["id"])
+    q_prev = state["quad_count"].get(quad_key(t1_ids, t2_ids), 0)
+    if q_prev > 0:
+        cost += W["quad_repeat"] * q_prev
+    m_prev = state["matchup_count"].get(matchup_key(t1_ids, t2_ids), 0)
+    if m_prev > 0:
+        cost += W["matchup_repeat"] * (m_prev * m_prev + 1)
+
     # 지난주/2주전과 같은 페어 회피 (단일 클럽일 때만 채워짐). 가중치: 1주전 > 2주전.
     hist_pen = state.get("hist_pair_penalty")
     if hist_pen:
@@ -221,8 +310,14 @@ def match_cost(
 
     eff_in = state.get("eff_in", {})
     multi_club = bool(state.get("multi_club"))
+    gender_lag = {"M": 0.0, "F": 0.0}
     if not multi_club and state["player_games"]:
         avg_games = sum(state["player_games"].values()) / max(1, len(state["player_games"]))
+        # 인원이 적은 성별(예: 여자 4명)은 복식 특성상 '통째로'만 늘어나 뒤처지기 쉽다.
+        # 뒤처진 성별을 먼저 투입해 최종 게임수가 한쪽으로 쏠리지 않게 한다.
+        for g, cnt in state["gender_count"].items():
+            if cnt:
+                gender_lag[g] = max(0.0, avg_games - state["gender_sum"][g] / cnt)
     else:
         avg_games = 0.0
 
@@ -242,6 +337,7 @@ def match_cost(
             base_avg = avg_games
         played = state["player_games"][p["id"]]
         cost += W["game_balance"] * (played + 1 - base_avg) ** 2
+        cost -= W["gender_catchup"] * gender_lag[p["gender"]]
 
         # 쉬고 있던 사람을 먼저 부른다 — 공백이 1시간 이상으로 벌어지기 전에 되돌린다.
         slots = state["player_slots"][p["id"]]
@@ -262,11 +358,15 @@ def match_cost(
     if match_type == "X":
         if pool_males_count >= 4 or pool_females_count >= 4:
             cost += W["mixed_overuse"]
-            # 평소(단일 클럽)에도 남복/여복 우선 — 단성 복식을 만들 수 있는데 혼복을 고를 때만.
-            if not state.get("multi_club"):
+            # 평소(단일 클럽)에도 남복/여복 우선.
+            # 단, 어느 한쪽 성별이 '중복 없는 단성 복식'을 더 못 만드는 상황(mixed_is_fallback)이면
+            # 혼복이 정당한 차선책이므로 이 페널티를 걷는다.
+            #   → "우선순위는 단성복식이지만, 페어가 상대편까지 중복될 바엔 혼복 1~2게임이 낫다"
+            if (not state.get("multi_club") and not mixed_is_fallback
+                    and state["type_count"]["X"] >= state.get("mixed_quota", 0)):
                 cost += W["single_mixed_nonpriority"]
-        # 교류전: 단성 복식(남복/여복) 우선 — 혼복은 단성복식이 불가능할 때만.
-        if state.get("multi_club"):
+        # 교류전: 단성 복식(남복/여복) 우선 — 여기서도 '중복 없는 단성 복식'이 더 없으면 혼복 허용.
+        if state.get("multi_club") and not mixed_is_fallback:
             cost += W["mixed_nonpriority"]
         for team in (team1, team2):
             male = team[0] if team[0]["gender"] == "M" else team[1]
@@ -342,6 +442,12 @@ def enumerate_candidates(
         m_by_club = {c: lst[:per_club] for c, lst in m_by_club.items()}
         f_by_club = {c: lst[:per_club] for c, lst in f_by_club.items()}
         club_keys = sorted(set(m_by_club) | set(f_by_club))
+        # 남녀 어느 한쪽이라도 '중복 없는 단성 복식(같은클럽 팀 vs 다른클럽)'을 못 만들면
+        # 혼복을 차선책으로 인정한다.
+        mixed_is_fallback = not (
+            clean_singles_available([p for p in pool_sorted if p["gender"] == "M"], state)
+            and clean_singles_available([p for p in pool_sorted if p["gender"] == "F"], state)
+        )
         for i in range(len(club_keys)):
             for j in range(i + 1, len(club_keys)):
                 Am, Bm = m_by_club.get(club_keys[i], []), m_by_club.get(club_keys[j], [])
@@ -358,7 +464,8 @@ def enumerate_candidates(
                         for bm in Bm:
                             for bf in Bf:
                                 t2 = (bm, bf)
-                                candidates.append((match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name), "X", t1, t2))
+                                candidates.append((match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f,
+                                                              court_name, mixed_is_fallback), "X", t1, t2))
         return candidates
 
     # 단일 클럽(평소): 기존 로직
@@ -403,6 +510,10 @@ def enumerate_candidates(
                 candidates.append((c, "F", t1, t2))
 
     if len(mixed_m) >= 2 and len(mixed_f) >= 2:
+        # 남녀 어느 한쪽이라도 '중복 없는 단성 복식'을 더 못 만들면 혼복은 차선책으로 인정.
+        mixed_is_fallback = not (
+            clean_singles_available(males, state) and clean_singles_available(females, state)
+        )
         for m_combo in itertools.combinations(mixed_m, 2):
             for f_combo in itertools.combinations(mixed_f, 2):
                 for swap in (False, True):
@@ -412,10 +523,39 @@ def enumerate_candidates(
                     else:
                         t1 = (m_combo[0], f_combo[1])
                         t2 = (m_combo[1], f_combo[0])
-                    c = match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name)
+                    c = match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name,
+                                   mixed_is_fallback)
                     candidates.append((c, "X", t1, t2))
 
     return candidates
+
+
+def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: int = 8) -> bool:
+    """이 성별만으로 '페어도 매치업도 처음인' 단성 복식을 만들 수 있는가.
+
+    False면 그 성별은 지금 단성 복식을 짜봐야 같은 짝이나 같은 대결이 반복된다는 뜻 →
+    혼복이 정당한 차선책이 된다. (여자가 4명뿐이면 여복 3판 뒤 반드시 False가 된다)
+    """
+    people = same_gender_pool[:limit]
+    if len(people) < 4:
+        return False
+    pc, mc = state["pair_count"], state["matchup_count"]
+    multi = bool(state.get("multi_club"))
+    for combo in itertools.combinations(people, 4):
+        for (i, j), (k, l) in (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2))):
+            p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
+            if multi:
+                # 교류전: 같은 팀은 같은 클럽, 상대는 다른 클럽이어야 성립하는 조합만 본다.
+                if not _same_club(p1, p2) or not _same_club(p3, p4) or _same_club(p1, p3):
+                    continue
+            t1 = (p1["id"], p2["id"])
+            t2 = (p3["id"], p4["id"])
+            if pc.get(pair_key(*t1)) or pc.get(pair_key(*t2)):
+                continue
+            if mc.get(matchup_key(t1, t2)):
+                continue
+            return True
+    return False
 
 
 def _hard_filter(
@@ -533,9 +673,7 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
             female = team[1] if team[0]["gender"] == "M" else team[0]
             if male["exp"] < female["exp"]:
                 cost += G["mixed_skill_violation"]
-        # 혼복은 차선책 — 단, 여복 페어가 반복될 수밖에 없는 상황(교류전 등)에서는
-        # 페어 중복 비용(pair_dup)이 쌓이면 혼복이 선택되도록 이 값을 과도하게 두지 않는다.
-        cost += G["mixed_match"]
+        # 혼복 자체의 개수 페널티는 허용량(mixed_quota)과 함께 봐야 하므로 full_score에서 계산한다.
     elif mtype == "F" and multi_club:
         cost -= G["women_doubles_bonus"]
 
@@ -549,6 +687,14 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
             cost += G["member_guest"]
 
     return cost
+
+
+def _quad_cost(count: int) -> float:
+    return G["quad_repeat"] * (count - 1) if count > 1 else 0.0
+
+
+def _matchup_cost(count: int) -> float:
+    return G["matchup_repeat"] * (count - 1) ** 2 if count > 1 else 0.0
 
 
 def pair_entry_cost(count: int, hist_w: float) -> float:
@@ -586,6 +732,7 @@ def fair_targets(ids: list[str], caps: dict, total_games: int) -> dict:
 
 
 def balance_cost(state: dict, players: list[dict]) -> float:
+    pbid = {p["id"]: p for p in players}
     caps = {
         p["id"]: min(
             p["max_games"] if p.get("max_games") else 10 ** 6,
@@ -606,9 +753,26 @@ def balance_cost(state: dict, players: list[dict]) -> float:
         cost += G["balance_spread"] * (max(devs) - min(devs))
         # 공평 기준(내림)보다도 덜 뛴 사람은 사실상 금지 — 쉬는 시간·공백보다 우선한다.
         for i in ids:
-            short = int(targets[i] + 1e-9) - state["player_games"][i]
+            g = state["player_games"][i]
+            short = int(targets[i] + 1e-9) - g
             if short > 0:
                 cost += G["balance_under"] * short * short
+            # 반올림 여유(0.5게임)를 넘겨 못 미치면 별도로 가산.
+            frac = targets[i] - g - 0.5
+            if frac > 0:
+                cost += G["balance_short"] * frac * frac
+
+        # 성별 쏠림 방지: 인원이 적은 성별(예: 여자 4명)은 복식 특성상 '통째로' 움직여
+        # 부족분 몫을 매번 그 그룹이 지게 되기 쉽다. 그룹 평균으로 한 번 더 본다.
+        games = [state["player_games"][i] for i in ids]
+        overall = sum(games) / len(ids)
+        by_gender = {}
+        for i in ids:
+            by_gender.setdefault(pbid[i]["gender"], []).append(state["player_games"][i])
+        for gs in by_gender.values():
+            lag = overall - (sum(gs) / len(gs)) - 0.25
+            if lag > 0:
+                cost += G["gender_fairness"] * lag * lag
     return cost
 
 
@@ -628,9 +792,22 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
     for k, c in state["pair_count"].items():
         score += pair_entry_cost(c, hist.get(k, 0.0))
 
+    # 같은 4명 재대결 (편 구성 무관 / 상대편까지 그대로)
+    for c in state["quad_count"].values():
+        score += _quad_cost(c)
+    for c in state["matchup_count"].values():
+        score += _matchup_cost(c)
+
     # 경기별 품질
     for m in state["matches"]:
         score += match_quality_cost(m, players_by_id, multi)
+
+    # 혼복 개수: 허용량(단성 복식만으로는 소수 성별의 게임수를 못 채우는 만큼)까지는 가볍게,
+    # 그 이상은 급격히 비싸게 — "우선순위는 남복/여복, 혼복은 1~2판까지"를 그대로 표현.
+    n_mixed = state["type_count"]["X"]
+    quota = state.get("mixed_quota", 0)
+    score += G["mixed_match"] * min(n_mixed, quota)
+    score += G["mixed_over_quota"] * max(0, n_mixed - quota) ** 2
 
     # 비어버린 코트-슬롯
     feasible_court_slots = 0
@@ -706,13 +883,17 @@ class Refiner:
             [{k: (list(v) if isinstance(v, list) else v) for k, v in m.items()} for m in self.matches],
             {k: list(v) for k, v in self.state["player_slots"].items()},
             dict(self.state["pair_count"]),
+            dict(self.state["quad_count"]),
+            dict(self.state["matchup_count"]),
         )
 
     def restore(self, snap) -> None:
-        ms, ps, pc = snap
+        ms, ps, pc, qc, mc = snap
         self.state["matches"] = [{k: (list(v) if isinstance(v, list) else v) for k, v in m.items()} for m in ms]
         self.state["player_slots"] = {k: list(v) for k, v in ps.items()}
         self.state["pair_count"] = dict(pc)
+        self.state["quad_count"] = dict(qc)
+        self.state["matchup_count"] = dict(mc)
         self._sync()
 
     # -- (1) 선수 교환 -------------------------------------------------------
@@ -763,9 +944,32 @@ class Refiner:
             old_c = self.state["pair_count"].get(k, 0)
             w = self.hist.get(k, 0.0)
             delta += pair_entry_cost(old_c + d, w) - pair_entry_cost(old_c, w)
-        return delta, new_sa, new_sb, changes
 
-    def _player_swap_commit(self, p1, p2, new_sa, new_sb, changes) -> None:
+        # 두 경기의 출전 4인이 바뀌므로 재대결 카운트도 갱신된다.
+        quad_ch, mu_ch = {}, {}
+        for m, side, idx, new_id in ((m1, side1, idx1, b_id), (m2, side2, idx2, a_id)):
+            old_t1, old_t2 = list(m["team1"]), list(m["team2"])
+            new_t1, new_t2 = list(old_t1), list(old_t2)
+            (new_t1 if side == "team1" else new_t2)[idx] = new_id
+            for kk, dd in ((quad_key(old_t1, old_t2), -1), (quad_key(new_t1, new_t2), +1)):
+                quad_ch[kk] = quad_ch.get(kk, 0) + dd
+            for kk, dd in ((matchup_key(old_t1, old_t2), -1), (matchup_key(new_t1, new_t2), +1)):
+                mu_ch[kk] = mu_ch.get(kk, 0) + dd
+        for kk, dd in quad_ch.items():
+            if not dd:
+                continue
+            oc = self.state["quad_count"].get(kk, 0)
+            delta += _quad_cost(oc + dd) - _quad_cost(oc)
+        for kk, dd in mu_ch.items():
+            if not dd:
+                continue
+            oc = self.state["matchup_count"].get(kk, 0)
+            delta += _matchup_cost(oc + dd) - _matchup_cost(oc)
+
+        return delta, new_sa, new_sb, (changes, quad_ch, mu_ch)
+
+    def _player_swap_commit(self, p1, p2, new_sa, new_sb, count_changes) -> None:
+        changes, quad_ch, mu_ch = count_changes
         mi1, side1, idx1 = p1
         mi2, side2, idx2 = p2
         m1, m2 = self.matches[mi1], self.matches[mi2]
@@ -783,12 +987,14 @@ class Refiner:
             self.state["player_slots"][b_id] = list(new_sb)
             self.tcache[a_id] = self.timing(a_id, new_sa)
             self.tcache[b_id] = self.timing(b_id, new_sb)
-        for k, d in changes.items():
-            if not d:
-                continue
-            self.state["pair_count"][k] = self.state["pair_count"].get(k, 0) + d
-            if self.state["pair_count"][k] <= 0:
-                self.state["pair_count"].pop(k, None)
+        for store, ch in (("pair_count", changes), ("quad_count", quad_ch), ("matchup_count", mu_ch)):
+            target = self.state[store]
+            for k, d in ch.items():
+                if not d:
+                    continue
+                target[k] = target.get(k, 0) + d
+                if target[k] <= 0:
+                    target.pop(k, None)
         # 같은 성별(교류전이면 같은 클럽)끼리만 교환하므로 pos_groups는 그대로 유효하다.
         self.qcache[mi1] = self.quality(m1)
         self.qcache[mi2] = self.quality(m2)
@@ -960,7 +1166,7 @@ def run_one_seed(
     hist_pairs=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
-    state = init_state(players, hist_pairs)
+    state = init_state(players, hist_pairs, schedule_slots)
 
     for slot in schedule_slots:
         played_here = set()
@@ -1003,8 +1209,8 @@ def solve(
     iters: int = 40,
     candidates: int = 24,
     hist_pairs=None,
-    refine: int = 10,
-    kicks: int = 60,
+    refine: int = 6,
+    kicks: int = 40,
     progress=None,
 ) -> dict:
     """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
@@ -1022,13 +1228,43 @@ def solve(
     results.sort(key=lambda x: x[0])
     best_score, best_seed, best_state = results[0]
 
-    for n, (score, s, state) in enumerate(results[: max(0, refine)], 1):
+    # 다듬을 초안 고르기: 점수순으로만 자르면 '복식 구성이 다른' 안(예: 여복 3+혼복 2)이
+    # 다듬기 전 거친 점수 때문에 통째로 탈락한다. 로컬 개선은 경기 종류를 못 바꾸므로
+    # 구성별로 최소 한 개씩은 남겨 두고, 남는 자리를 점수순으로 채운다.
+    def comp_of(entry):
+        return (entry[2]["type_count"]["F"], entry[2]["type_count"]["X"])
+
+    picked, seen_comp, taken = [], set(), set()
+    # ① 점수 상위 절반은 무조건 확보 (다듬기 효과가 가장 큰 안들)
+    for entry in results[: max(1, refine // 2)]:
+        picked.append(entry)
+        taken.add(entry[1])
+        seen_comp.add(comp_of(entry))
+    # ② 나머지 자리는 아직 안 나온 구성 중 점수가 가장 좋은 안으로 채운다
+    for entry in results:
+        if len(picked) >= refine:
+            break
+        comp = comp_of(entry)
+        if comp in seen_comp or entry[1] in taken:
+            continue
+        seen_comp.add(comp)
+        taken.add(entry[1])
+        picked.append(entry)
+    # ③ 그래도 자리가 남으면 점수순으로 채운다
+    for entry in results:
+        if len(picked) >= refine:
+            break
+        if entry[1] not in taken:
+            taken.add(entry[1])
+            picked.append(entry)
+
+    for n, (score, s, state) in enumerate(picked, 1):
         refiner = Refiner(state, players, schedule_slots, random.Random(s * 7919 + 13))
         new_score = refiner.run(kicks=kicks)
         if new_score < best_score:
             best_state, best_score, best_seed = state, new_score, s
         if progress:
-            progress(f"공백·대기 줄이기 {n}/{min(refine, len(results))}")
+            progress(f"공백·대기 줄이기 {n}/{len(picked)}")
 
     eff_in = best_state.get("eff_in", {})
     player_stats = []
@@ -1080,9 +1316,9 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--iters", type=int, default=40)
     ap.add_argument("--candidates", type=int, default=24)
-    ap.add_argument("--refine", type=int, default=10,
+    ap.add_argument("--refine", type=int, default=6,
                     help="상위 N개 시드에 대해 로컬 개선(선수 교환/경기 이동)을 수행 (0=끔)")
-    ap.add_argument("--kicks", type=int, default=60,
+    ap.add_argument("--kicks", type=int, default=40,
                     help="로컬 개선에서 국소최적 탈출용 무작위 교란 횟수")
     ap.add_argument("--history", default="",
                     help="지난주/2주전 페어 회피용 히스토리 JSON (history.py 산출물). 단일 클럽일 때만 반영.")
