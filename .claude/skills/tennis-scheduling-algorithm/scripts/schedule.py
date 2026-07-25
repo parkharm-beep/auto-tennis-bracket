@@ -103,9 +103,10 @@ MIXED_SMALL_WOMEN = 6
 MIXED_MIN_GAMES = 1       # 최소 보장 판수
 MIXED_DEFAULT_QUOTA = 2   # 그때의 허용 상한 (= "1~2게임 정도")
 
-# 단성 복식(남복/여복)에서 두 팀 구력합 차이가 이 값을 넘으면 '쓸 만한 대진'으로 치지 않는다.
-# 억지로 여복을 만들다 구력이 안 맞는 재미없는 경기가 되느니 혼복이 낫다는 판단.
-SINGLES_SKILL_TOL = 4
+# 두 팀 구력합 차이가 이 값을 넘으면 '쓸 만한 대진'으로 치지 않는다.
+# 예: 방미라(3)+노남숙(3)=6  vs  서명숙(5)+정정희(5)=10 → 차이 4 → 재미없는 대진으로 본다.
+# 억지로 여복을 만들다 구력이 안 맞느니 다른 조합이나 혼복이 낫다는 판단.
+SINGLES_SKILL_TOL = 3
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -228,8 +229,9 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
         total_matches += min(len(sl["courts"]), n_avail // 4)
     if total_matches and n:
         target = round(4 * total_matches / n)          # 1인당 공평 게임수
-        need = max(0, target - capacity)               # 단성 복식만으로 못 채우는 게임수
-        quota = -(-minority * need // 2)               # 혼복 1판이 소수 성별 2명을 태운다
+        # 소수 성별이 필요한 총 출전 자리 − 단성 복식이 태울 수 있는 자리(1판당 4명)
+        short_seats = max(0, minority * target - 4 * capacity)
+        quota = -(-short_seats // 2)                   # 혼복 1판이 소수 성별 2명을 태운다
 
     if n_f <= MIXED_SMALL_WOMEN:
         return MIXED_MIN_GAMES, max(quota, MIXED_DEFAULT_QUOTA)
@@ -630,6 +632,7 @@ def good_singles_capacity(same_gender_players: list[dict], multi: bool = False) 
     if n < 4:
         return 0
     count = 0
+    usable_pairs = set()
     for combo in itertools.combinations(same_gender_players, 4):
         for (i, j), (k, l) in SPLITS_OF_4:
             p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
@@ -637,8 +640,12 @@ def good_singles_capacity(same_gender_players: list[dict], multi: bool = False) 
                 continue
             if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) <= SINGLES_SKILL_TOL:
                 count += 1
-    # 짝이 겹치지 않으려면 한 판에 페어 2개를 쓰므로 (가능한 페어 수 / 2)판이 상한
-    return min(count, n * (n - 1) // 2 // 2)
+                usable_pairs.add(pair_key(p1["id"], p2["id"]))
+                usable_pairs.add(pair_key(p3["id"], p4["id"]))
+    # 짝이 겹치지 않으려면 한 판에 페어 2개를 쓴다.
+    # 이때 쓸 수 있는 페어는 '구력 조건을 통과한 대진에 실제로 등장하는 페어'뿐이다.
+    # (예: 여자 3/3/5/5/7에서 3+3 짝은 어떤 편 구성으로도 구력차 3을 못 맞춰 아예 못 쓴다)
+    return min(count, len(usable_pairs) // 2)
 
 
 def _hard_filter(
