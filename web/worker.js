@@ -85,16 +85,19 @@ _call_tpl
       return;
     }
     try {
-      const { bytes, prev1, prev2, dateStr, seed, iters, title } = payload;
+      const { bytes, prev1, prev2, dateStr, seed, iters, title, refine, kicks } = payload;
       const prevNote = prev1 || prev2 ? " · 지난 대진표 페어 회피 반영" : "";
-      postMessage({ type: "log", msg: `대진 생성 중 (시드 ${seed}, 반복 ${iters})${prevNote}…` });
+      postMessage({
+        type: "log",
+        msg: `대진 생성 중 (시드 ${seed}, 초안 ${iters}개 → 공백·대기 줄이기)${prevNote}… 20~60초 걸릴 수 있습니다.`,
+      });
 
       const callGen = pyodide.runPython(`
-def _call(input_buf, date_str, seed, iters, title, prev1, prev2):
+def _call(input_buf, date_str, seed, iters, title, prev1, prev2, refine, kicks):
     import run
     return run.generate_bracket_json_result(
         input_buf, date_str=date_str, seed=seed, iters=iters, title=title,
-        prev1_bytes=prev1, prev2_bytes=prev2,
+        prev1_bytes=prev1, prev2_bytes=prev2, refine=refine, kicks=kicks,
     )
 _call
       `);
@@ -103,7 +106,7 @@ _call
       const p1 = prev1 ? new Uint8Array(prev1) : null;
       const p2 = prev2 ? new Uint8Array(prev2) : null;
       const t0 = performance.now();
-      const py_result = callGen(u8, dateStr, seed, iters, title, p1, p2);
+      const py_result = callGen(u8, dateStr, seed, iters, title, p1, p2, refine, kicks);
       const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
 
       const result = py_result.toJs({ dict_converter: Object.fromEntries });

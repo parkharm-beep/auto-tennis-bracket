@@ -1,6 +1,6 @@
 ---
 name: tennis-scheduling-algorithm
-description: 테니스 대진표 생성 알고리즘. 슬롯×코트 매트릭스에 게임을 배정하고 (남복/여복/혼복), 페어 중복 회피, 게임수 균형, 연속 출전 회피, 구력 밸런스를 동시 최적화. 생성 결과의 품질도 평가.
+description: 테니스 대진표 생성 알고리즘. 슬롯×코트 매트릭스에 게임을 배정하고 (남복/여복 우선·혼복은 차선), 1시간 이상 쉬는 텀 회피, 대기시간 최소화(일찍 온 사람이 일찍 끝나게), 페어 중복 회피, 게임수 균형, 구력 밸런스를 동시 최적화. 생성 결과의 품질도 평가.
 ---
 
 # Tennis Scheduling Algorithm
@@ -9,105 +9,126 @@ description: 테니스 대진표 생성 알고리즘. 슬롯×코트 매트릭�
 
 ## 알고리즘 개요
 
-**다중 시드 그리디 + 점수 기반 후보 선택.**
+**2단계: 다중 시드 그리디(초안) → 반복 로컬 탐색(다듬기).**
 
-1. R회 (기본 80회) 반복:
-   - 매번 다른 랜덤 시드로 슬롯×코트 셀을 순서대로 채움
-   - 각 셀에서 가용 풀의 4명 후보 조합을 K개 (기본 24개) 평가 → 최고점 선택
-   - 전체 결과의 총점 계산
-2. R개 결과 중 총점 최저(=최선) 선택
+1. **초안 생성** — R회(기본 40회) 반복
+   - 매번 다른 랜덤 시드로 슬롯×코트 셀을 시간 순서대로 채움
+   - 각 셀에서 가용 풀의 후보 조합을 평가해 `match_cost` 최저 쪽을 확률적으로 선택
+   - 완성된 초안을 `full_score`로 채점
+2. **로컬 개선(ILS)** — 상위 N개(기본 10개) 초안에 대해
+   - **선수 교환**: 같은 성별(교류전이면 같은 클럽) 두 선수를 맞바꿈
+     - 다른 슬롯끼리면 시간표가 바뀌고, 같은 슬롯끼리면 페어/구력만 바뀜
+   - **경기 이동**: 두 경기의 출전 명단을 통째로 맞바꿔 경기 시간대를 교체
+     - 여복처럼 멤버가 고정된 경기는 선수 교환으로는 못 옮기므로 이 수술이 필요
+   - 더 이상 좋아지지 않으면 **무작위 교란(kick)** 후 다시 내리막 → 최고 기록 보관
+   - 교란의 절반은 "공백·대기가 가장 심한 선수"가 낀 자리를 노려서 흔든다
+   - 두 수술 모두 **경기 수·경기 종류 총계·개인 게임수를 보존**한다 (교환이므로)
+3. 전체에서 `full_score` 최저인 결과 채택
 
-## 점수 함수 (낮을수록 좋음)
+> 초안을 많이 만드는 것보다 로컬 개선에 예산을 쓰는 쪽이 품질이 훨씬 좋다.
+> (실측: 초안 200개만 = 긴 공백 11건 → 초안 20개 + 로컬 개선 = 4건)
 
-각 매치의 비용 + 전체 결과의 비용 합산:
+## 비용 함수
 
-### 매치 단위 비용 (composer가 후보 선택 시 사용)
+### 1) `match_cost` — 초안 생성 시 한 경기를 고를 때 (W 가중치)
+
+주요 항목:
+- 팀 합산 구력 차이
+- 페어 중복 `20*(prev²+1)` (초선형)
+- 지난주/2주전 같은 페어 (단일 클럽일 때만)
+- 2슬롯 연속(약하게) / 3슬롯 연속(강하게, 풀이 8명 이상이면 하드 필터로 제외)
+- 게임수 균형 `(현재게임수+1 - 평균)²`
+- **유휴 복귀 우선(`idle_urgency`, 음수 비용)** — 오래 쉰 사람일수록 먼저 투입.
+  쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 없다.
+  단, 이미 평균보다 많이 뛴 사람은 0.35배로 약화(공평성 우선).
+- **혼복 페널티** — 단일 클럽 `single_mixed_nonpriority=70`, 교류전 `mixed_nonpriority=120`.
+  단성 복식(남복/여복)을 만들 수 있는 상황에서 혼복을 고를 때만 적용.
+  페어 중복 첫 발생 비용(40)보다 크게 두어, "짝이 한 번 겹치는 정도는 혼복보다 낫다"가 되도록 함.
+- 혼복 구력 규칙 위반(남<여) 1000 — 사실상 금지
+- 코트 affinity(A=여복/혼복, B=남복), 여성 07:30 이전 슬롯, 정회원·게스트 혼합
+- 교류전 여복 우대 `women_doubles_bonus=200`
+
+### 2) `full_score` — 완성된 대진표 전체 (G 가중치)
+
 ```
-match_cost =
-    w_team_skill_diff * |sum(team1_exp) - sum(team2_exp)|
-  + w_pair_repeat     * (이 게임 페어 중 이미 출현한 페어 수 * 페어 빈도)
-  + w_consecutive     * sum(직전 슬롯에서 이 사람이 게임했는지) 인원수
-  + w_three_consec    * sum(직전2슬롯 연속 출전 여부) * 100
-  + w_game_balance    * sum(이 게임 참가자의 현재 게임수 - 평균 게임수)^2
-  + w_mixed_overuse   * (남복/여복이 가능한데 혼복을 골랐을 때 페널티)
-  + w_mixed_skill_rule_violation * (혼복에서 남자 구력 < 여자 구력일 때 큰 페널티)
-  + w_no_member_guest_mix * (한 팀이 전원 정회원 또는 전원 게스트일 때 작은 페널티)
+full_score = balance_cost + Σ player_timing_cost + Σ pair_entry_cost
+             + Σ match_quality_cost + 빈 코트-슬롯 페널티
 ```
 
-### 가중치 (기본값, schedule.py에서 조정 가능)
-```python
-W = dict(
-    team_skill_diff=2.0,
-    pair_repeat=15.0,
-    consecutive=3.0,
-    three_consec=50.0,
-    game_balance=1.5,
-    mixed_overuse=8.0,
-    mixed_skill_rule_violation=100.0,
-    no_member_guest_mix=1.0,
-)
-```
+- **`balance_cost`** — 물채우기(water-filling)로 계산한 **공평 목표 게임수** 대비 편차.
+  최대게임수 제한이나 짧은 참석시간 때문에 애초에 많이 못 뛰는 사람이 평균을 끌어내려
+  다른 사람까지 저평가되는 문제를 없앤다. 목표(내림)보다 덜 뛴 사람은 `balance_under=400`으로 사실상 금지.
+- **`player_timing_cost`** — 사람별 시간표 품질. **이번 개편의 핵심.**
+  - 도착(실질 IN) 후 첫 경기까지 대기: 선형 + 1시간 초과분 제곱(`long_start_delay`)
+  - 경기 사이 공백: 선형 + **1시간 이상이면 `long_gap=150 × (초과 30분 단위)²`** — 최우선 회피
+  - 개인 총 유휴시간의 **볼록(제곱) 페널티(`idle_sq`)** — 노는 시간이 한 사람에게 몰리지 않게.
+    총 유휴시간은 코트 사정상 거의 정해져 있으므로 이 항이 부담을 고르게 나누고,
+    결과적으로 **일찍 온 사람이 일찍 끝나고 늦게 온 사람이 뒤를 맡는** 구조가 된다.
+  - 2슬롯 연속(약함) / 3슬롯 연속(400)
+- **`pair_entry_cost`** — 페어 중복 `30*(count-1)²` + 지난 대진표 반복
+- **`match_quality_cost`** — 구력차, 혼복 규칙 위반, **혼복 1경기당 `mixed_match=45`**,
+  교류전 여복 보너스, 코트 affinity, 이른 슬롯 여성, 정회원·게스트 혼합
+- 빈 코트-슬롯 `missed=5000` (사실상 하드)
 
-## 후보 생성 전략 (composer가 각 셀에서)
+### 실질 도착 시각 (`build_eff_in`)
 
-가용 풀이 N명일 때 C(N,4) 전체를 다 평가하면 폭주. 그래서:
+대기시간의 기준점. `max(IN시간, 실제로 뛸 수 있는 가장 이른 슬롯)`이고 여성은 07:30 이후.
+코트가 아직 안 열려서 못 뛰는 시간을 "대기"로 잘못 세지 않기 위함.
 
-1. 가용 풀 정렬: (게임수 적은 순, 직전 슬롯 미출전 순, 무작위 jitter)
-2. 상위 min(N, 10)명만 후보로 → C(min(N,10), 4) ≤ 210 평가
-3. 게임 유형별 가능성:
-   - 남자 ≥ 4명 → 남복 후보 생성
-   - 여자 ≥ 4명 → 여복 후보 생성
-   - 남자 ≥ 2 AND 여자 ≥ 2 → 혼복 후보 생성
-4. 4명 조합에 대해 가능한 팀 분할:
-   - 남복/여복: 3가지 분할 (1-2 vs 3-4, 1-3 vs 2-4, 1-4 vs 2-3)
-   - 혼복: 남자 2명 / 여자 2명 고정 → 페어 짝 2가지 (남1+여1 / 남2+여2, 또는 남1+여2 / 남2+여1)
-5. 모든 (후보 조합, 분할) 쌍에 대해 match_cost 계산 → 최저 선택
+## 후보 생성 전략
 
-## 슬롯 처리 순서
+가용 풀 N명일 때 C(N,4) 전체 평가는 폭주하므로:
 
-기본: 시간 오름차순. 동일 시간 내 코트는 알파벳 순.
-
-시간 진행 시 "지나간 슬롯의 결과"를 현재 비용 계산에 반영 (페어 중복, 게임수, 연속).
+1. 가용 풀 정렬: (게임수 적은 순, 오래 쉰 순, 직전 슬롯 미출전 순, 무작위 jitter)
+2. 상위 `top_k=10`명 + 조합 상한 `SINGLES_TOP=8`(남복/여복), `MIXED_TOP=5`(혼복)
+3. 여자가 풀에 4명 이상인데 상위 10명 안에 4명이 안 들어오면 따로 확보 —
+   여복 후보 자체가 안 만들어져 "혼복만 나오는" 현상을 막기 위함
+4. 4명 조합의 팀 분할: 남복/여복 3가지, 혼복 2가지
+5. 교류전은 클럽별로 추려 **cross-club 매치만 직접 생성** (같은 팀=같은 클럽이 구조적 보장)
 
 ## 사용
 
-### 대진 생성
 ```powershell
-python C:\Works\auto-tennis-bracket\.claude\skills\tennis-scheduling-algorithm\scripts\schedule.py `
-  --in  C:\Works\auto-tennis-bracket\_workspace\01_parsed.json `
-  --out C:\Works\auto-tennis-bracket\_workspace\02_bracket.json `
-  --seed 42 --iters 80 --candidates 24
+# 대진 생성 (기본: 초안 40 + 상위 10개 로컬 개선 × 교란 60회, 약 30초)
+python .claude\skills\tennis-scheduling-algorithm\scripts\schedule.py `
+  --in _workspace\01_parsed.json --out _workspace\02_bracket.json `
+  --seed 7 --iters 40 --refine 10 --kicks 60
+
+# 품질 평가
+python .claude\skills\tennis-scheduling-algorithm\scripts\review.py `
+  --parsed _workspace\01_parsed.json --bracket _workspace\02_bracket.json `
+  --out _workspace\03_review.json
 ```
 
-### 품질 평가
-```powershell
-python C:\Works\auto-tennis-bracket\.claude\skills\tennis-scheduling-algorithm\scripts\review.py `
-  --parsed  C:\Works\auto-tennis-bracket\_workspace\01_parsed.json `
-  --bracket C:\Works\auto-tennis-bracket\_workspace\02_bracket.json `
-  --out     C:\Works\auto-tennis-bracket\_workspace\03_review.json
-```
-
-review.py는 평가표를 stdout에 출력하고 verdict(PASS/RETRY/ACCEPT_WITH_WARNINGS)를 결정.
+- `--refine 0`이면 로컬 개선을 끄고 그리디 결과만 사용(빠르지만 공백이 훨씬 많다)
+- `--kicks`를 키우면 품질↑ 시간↑ (100 이상은 수익 체감)
+- CLI(`main`)와 웹(Pyodide `web/py/run.py`)은 모두 `solve()` 하나를 공유한다
 
 ## 임계값 (review.py)
 
 | 지표 | 임계값 (PASS) | 초과 시 |
 |------|--------------|---------|
-| 동일시간대 게임수 격차 | ≤ 2 | RETRY |
-| 전체 게임수 격차 | ≤ 4 | RETRY |
-| 페어 중복률 | ≤ 5% | RETRY |
-| 3슬롯 연속 출전 | = 0 | RETRY (절대 임계값) |
-| 평균 팀 구력 차이 | ≤ 3 | RETRY |
-| 최대 팀 구력 차이 | ≤ 5 | RETRY |
-| 혼복 규칙 위반 (남<여 구력) | = 0 | RETRY |
+| 동일 가용슬롯 그룹 내 게임수 격차 | ≤ 2 | RETRY |
+| 전체(교류전은 클럽 내) 게임수 격차 | ≤ 4 | RETRY |
+| 페어 중복률 | ≤ 5% | RETRY (교류전 제외) |
+| 3슬롯 연속 출전 (1인당) | ≤ 2 | RETRY |
+| **1시간 이상 공백을 겪는 인원 비율** | ≤ 30% | RETRY |
+| 평균 팀 구력 차이 | ≤ 3 | RETRY (교류전 제외) |
+| 최대 팀 구력 차이 (outlier 제외) | ≤ 7 | RETRY (교류전 제외) |
+| 혼복 규칙 위반 (남<여 구력) | = 0 | RETRY (구조적 불가피/교류전 제외) |
 | 혼복 비율 (성별 균형 시) | ≤ 25% | WARNING (RETRY 아님) |
+| 최대게임수 초과 | = 0 | RETRY |
+| 교류전 클럽 혼합 페어 | = 0 | RETRY |
 
-3회 RETRY 후에도 통과 못하면 ACCEPT_WITH_WARNINGS로 전환.
+review는 `long_gaps`, `long_gap_players`, `total_idle_min`, `last_match_end`도 함께 보고한다.
 
-## 알고리즘 한계 (사용자 보고 항목)
+## 알고리즘 한계 (사용자에게 보고할 항목)
 
-- 가용 인원이 정말 부족한 슬롯은 공석 처리 (예: 09:00 슬롯에 2명만 가능)
-- 남자 또는 여자가 극단적으로 적으면 혼복 비율 임계값 무시
-- 게임수 격차는 IN/OUT 차이가 큰 인원이 섞이면 불가피하게 커짐
-
-이런 한계는 review가 ACCEPT_WITH_WARNINGS와 함께 명시적으로 보고.
+- **인원 대비 코트가 부족하면 공백은 구조적으로 불가피.**
+  예: 21명 / 코트 2면 → 슬롯당 8명만 뛰고 13명이 쉰다. 평균 재출전 간격이 60분을 넘으므로
+  1시간 이상 공백을 0으로 만들 수 없다. 목표는 "최소화"이지 "제거"가 아니다.
+- 여자가 4명 미만이면 여복 불가 → 혼복이 강제된다
+- 여자 최고 구력 > 남자 최고 구력이면 혼복 구력 규칙 위반이 불가피
+- 교류전에서 한쪽 클럽 여자가 2명뿐이면 여복 페어가 고정되어 페어 중복이 불가피
+  (`pair_dup` 초선형 비용이 쌓이면 혼복이 차선책으로 열린다)
+- 특정 슬롯에 가용 인원 4명 미만이면 그 코트는 공석

@@ -236,7 +236,8 @@ def cmd_generate(args) -> int:
 
     rc = _run("2/4 대진 생성",
               [SCRIPTS["schedule"], "--in", PARSED_JSON, "--out", BRACKET_JSON,
-               "--seed", str(args.seed), "--iters", str(args.iters), *history_arg])
+               "--seed", str(args.seed), "--iters", str(args.iters),
+               "--refine", str(args.refine), "--kicks", str(args.kicks), *history_arg])
     if rc != 0:
         return rc
 
@@ -279,7 +280,11 @@ def main():
                    help="대진표 상단 날짜 + 출력 파일명 suffix (예: 26.5.30)")
     p.add_argument("--title", default="우리 테니스 클럽 이번 주 대진표")
     p.add_argument("--seed", type=int, default=7, help="알고리즘 시드")
-    p.add_argument("--iters", type=int, default=250, help="시드 반복 횟수")
+    p.add_argument("--iters", type=int, default=40, help="시드 반복 횟수(초안 생성)")
+    p.add_argument("--refine", type=int, default=10,
+                   help="상위 N개 초안을 로컬 개선(공백/대기 줄이기)으로 다듬음")
+    p.add_argument("--kicks", type=int, default=60,
+                   help="로컬 개선의 무작위 교란 횟수 — 크게 하면 품질↑ 시간↑")
     p.add_argument("--keep-prev", action="store_true",
                    help="기존 _workspace 보존 (_workspace_prev/로 이동)")
     p.add_argument("--prev1", help="1주전 대진표 엑셀 경로 (겹치는 페어 회피, 우선순위 높음)")

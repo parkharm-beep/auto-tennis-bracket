@@ -17,7 +17,7 @@ from parse_input import (
     attach_available_slots,
     min_to_hhmm,
 )
-from schedule import run_one_seed
+from schedule import solve
 from review import compute_scores
 from render_bracket import render
 from build_template import build_template
@@ -107,63 +107,32 @@ def _build_hist_pairs(prev_specs) -> list:
     return [[a, b, round(w, 4)] for (a, b), w in weighted.items()]
 
 
-def _schedule(parsed: dict, seed: int, iters: int, candidates: int = 24, hist_pairs=None) -> dict:
-    best_state, best_score = None, float("inf")
-    best_seed = seed
-    for i in range(iters):
-        s = seed + i
-        state, score = run_one_seed(parsed["players"], parsed["schedule_slots"], s, candidates, hist_pairs)
-        if score < best_score:
-            best_state, best_score = state, score
-            best_seed = s
-    if best_state is None:
-        raise RuntimeError("대진 생성 실패: 가용 인원 부족")
-
-    player_stats = []
-    for p in parsed["players"]:
-        pid = p["id"]
-        slots = sorted(best_state["player_slots"][pid])
-        player_stats.append({
-            "id": pid,
-            "name": p["name"],
-            "gender": p["gender"],
-            "exp": p["exp"],
-            "membership": p["membership"],
-            "club": p.get("club", ""),
-            "games": best_state["player_games"][pid],
-            "available_slots": len(p["available_slots"]),
-            "slots_played": slots,
-            "in_min": p["in_min"],
-            "out_min": p["out_min"],
-            "max_games": p.get("max_games"),
-        })
-
-    return {
-        "matches": best_state["matches"],
-        "player_stats": player_stats,
-        "type_count": best_state["type_count"],
-        "metadata": {"seed": best_seed, "score": best_score, "iterations": iters},
-    }
-
-
 def generate_bracket(
     xlsx_bytes: bytes,
     date_str: str = "",
     seed: int = 7,
-    iters: int = 150,
+    iters: int = 20,
     title: str = "우리 테니스 클럽 대진표",
     prev1_bytes=None,
     prev2_bytes=None,
+    refine: int = 6,
+    kicks: int = 40,
 ) -> dict:
     """입력 엑셀 bytes → {xlsx: bytes, review: dict, summary: dict}.
 
     prev1_bytes(1주전)/prev2_bytes(2주전)를 주면 그 대진표들과 겹치는 페어를 최대한 피한다.
     (우리 멤버끼리일 때만 실제 반영 — 교류전이면 자동 무시)
     브라우저에서 호출 후 xlsx 필드를 Blob으로 만들어 다운로드.
+
+    iters=초안 생성 횟수, refine/kicks=공백·대기 줄이는 로컬 개선 강도.
+    브라우저(Pyodide)는 네이티브보다 느리므로 기본값을 CLI보다 낮게 잡는다.
     """
     parsed = _parse_bytes(xlsx_bytes)
     hist_pairs = _build_hist_pairs([(prev1_bytes, DEFAULT_W1), (prev2_bytes, DEFAULT_W2)])
-    bracket = _schedule(parsed, seed, iters, hist_pairs=hist_pairs)
+    bracket = solve(
+        parsed["players"], parsed["schedule_slots"],
+        seed=seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
+    )
     review = compute_scores(parsed, bracket, hist_pairs)
 
     out_buf = BytesIO()
@@ -197,8 +166,9 @@ def build_empty_template_bytes(prefill: str = "") -> bytes:
     return buf.getvalue()
 
 
-def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=150,
-                                 title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None):
+def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=20,
+                                 title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None,
+                                 refine=6, kicks=40):
     """Pyodide JS 호출용 wrapper. JS의 Uint8Array를 받아 dict 반환.
 
     xlsx 결과는 별도 함수로 가져가도록 분리하지 않고, 결과 dict에 bytes 그대로 포함.
@@ -207,5 +177,5 @@ def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=150,
     main_bytes = _to_bytes(xlsx_bytes_bin)
     return generate_bracket(
         main_bytes, date_str=date_str, seed=seed, iters=iters, title=title,
-        prev1_bytes=prev1_bytes, prev2_bytes=prev2_bytes,
+        prev1_bytes=prev1_bytes, prev2_bytes=prev2_bytes, refine=refine, kicks=kicks,
     )

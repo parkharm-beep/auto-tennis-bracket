@@ -1,4 +1,4 @@
-"""Generate a tennis bracket via multi-seed greedy heuristic.
+"""Generate a tennis bracket via multi-seed greedy heuristic + swap local search.
 
 Usage:
     python schedule.py --in <parsed.json> --out <bracket.json> [--seed 42] [--iters 80] [--candidates 24]
@@ -6,19 +6,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import copy
 import itertools
 import json
 import os
 import random
 import sys
 
+# ---------------------------------------------------------------------------
+# W: 그리디 후보 선택용 가중치 (한 경기를 고를 때의 비용)
+# ---------------------------------------------------------------------------
 W = dict(
     team_skill_diff=4.0,
     pair_repeat=20.0,
-    consecutive=5.0,
+    consecutive=3.0,            # 2슬롯 연속은 '몰아서 하고 일찍 끝내기'에 유리 → 약하게만 억제
     three_consec=500.0,
-    game_balance=2.0,
+    game_balance=3.0,
     mixed_overuse=5.0,
     mixed_skill_rule_violation=1000.0,
     no_member_guest_mix=1.0,
@@ -29,6 +31,46 @@ W = dict(
     history_pair_repeat=30.0,   # 지난주/2주전과 같은 페어 회피(소프트). 우리멤버끼리(단일클럽)일 때만 적용, 교류전 제외.
                                 # 같은주 중복페어 유효비용(pair_repeat 20 → 첫 중복 40)보다 낮게 둔다:
                                 # 지난주 회피 때문에 이번 주 안에서 같은 짝을 반복하는 자기모순을 막기 위함.
+    single_mixed_nonpriority=70.0,
+    # ↑ 평소(단일 클럽)에도 남복/여복 우선. 혼복은 '단성 복식이 가능한데도' 고를 때만 페널티.
+    #   페어 중복 첫 발생 비용(pair_repeat 20 → 40)보다 크게 두어, 페어가 한 번 겹치는 정도는
+    #   혼복보다 낫다고 보고, 두 번 이상 겹칠 상황(20*(4+1)=100)이면 혼복을 차선책으로 허용한다.
+    idle_urgency=14.0,
+    # ↑ 오래 쉰 사람을 먼저 투입(음수 비용). '1시간 이상 공백'을 만들기 전에 되돌리는 힘.
+    #   쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 생기지 않는다.
+)
+
+IDLE_URGENCY_CAP = 4.0          # 유휴 우선 보정 상한(30분 단위) — 2시간 이상은 더 커지지 않음
+
+# 후보 조합 상한 (게임수 적은 순 정렬 기준 상위 N명). 조합 폭발을 막아 속도를 확보한다.
+SINGLES_TOP = 8                 # 남복/여복 조합에 쓸 인원
+MIXED_TOP = 5                   # 혼복 조합에 쓸 남/여 인원
+
+# ---------------------------------------------------------------------------
+# G: 완성된 대진표 전체를 평가하는 가중치 (시드 선택 + 로컬 개선의 목적함수)
+# ---------------------------------------------------------------------------
+G = dict(
+    balance_sq=12.0,
+    balance_spread=30.0,
+    balance_under=400.0,        # 공평 기준보다 1게임 넘게 덜 뛰는 사람 (초과분)^2 — 사실상 금지
+    pair_dup=30.0,
+    history_pair=30.0,
+    three_streak=400.0,
+    two_streak=2.0,
+    mixed_match=45.0,           # 평소: 혼복 1경기당 페널티 (남복/여복 우선)
+    women_doubles_bonus=100.0,  # 교류전: 여복 1경기당 보너스
+    team_skill_diff=4.0,
+    mixed_skill_violation=1000.0,
+    court_affinity=10.0,
+    female_early=80.0,
+    member_guest=1.0,
+    gap=4.0,                    # 경기 사이 공백 30분당
+    long_gap=150.0,             # 경기 사이 공백이 1시간 이상일 때 (초과 30분 단위)^2 — 최우선 회피
+    start_delay=5.0,            # 도착(IN) 후 첫 경기까지 대기 30분당
+    long_start_delay=60.0,      # 첫 경기까지 1시간 넘게 기다릴 때 (초과 30분 단위)^2
+    idle_sq=5.0,                # 개인별 총 유휴시간(대기+공백)의 볼록 페널티 — 한 사람에게 몰리는 것 방지
+    missed=5000.0,
+    accept_tolerance=90.0,      # 교란 후 이 정도 나빠짐까지는 받아들여 탐색을 넓힌다(점점 0으로)
 )
 
 FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
@@ -50,6 +92,24 @@ def pair_key(a: str, b: str) -> tuple[str, str]:
 def _same_club(a: dict, b: dict) -> bool:
     """두 선수가 같은 클럽 소속인지. 클럽 정보 없으면 같은 것으로 간주."""
     return a.get("club", "") == b.get("club", "")
+
+
+def build_eff_in(players: list[dict]) -> dict:
+    """선수별 '실질 도착 시각' = 실제로 뛸 수 있는 가장 이른 슬롯.
+
+    IN시간이 코트 운영 전이거나(예: 07:00 IN인데 07:00엔 코트가 없음),
+    여성처럼 07:30 이전 회피 규칙이 걸린 경우까지 반영한다.
+    대기시간을 이 기준으로 재므로 '구조상 불가능한 대기'는 페널티로 잡히지 않는다.
+    """
+    out = {}
+    for p in players:
+        av = p.get("available_slots") or []
+        base = p["in_min"]
+        if p["gender"] == "F":
+            base = max(base, FEMALE_EARLIEST_SLOT_MIN)
+        cand = [s for s in av if s >= base]
+        out[p["id"]] = cand[0] if cand else (av[0] if av else base)
+    return out
 
 
 def build_hist_penalty(players: list[dict], hist_pairs) -> dict:
@@ -100,6 +160,7 @@ def init_state(players: list[dict], hist_pairs=None) -> dict:
         "bal_count": {k: len(ids) for k, ids in bal_members.items()},
         "bal_game_sum": {k: 0 for k in bal_members},
         "hist_pair_penalty": hist_pair_penalty,
+        "eff_in": build_eff_in(players),
     }
 
 
@@ -158,25 +219,40 @@ def match_cost(
             if w:
                 cost += W["history_pair_repeat"] * w
 
+    eff_in = state.get("eff_in", {})
+    multi_club = bool(state.get("multi_club"))
+    if not multi_club and state["player_games"]:
+        avg_games = sum(state["player_games"].values()) / max(1, len(state["player_games"]))
+    else:
+        avg_games = 0.0
+
     for p in all_players:
         if is_two_streak(p["id"], slot_start, state):
             cost += W["consecutive"]
         if is_three_streak(p["id"], slot_start, state):
             cost += W["three_consec"]
 
-    if state.get("multi_club"):
-        # 교류전: 게임수 균형은 (클럽, 성별) 그룹 내부에서만 평가
-        for p in all_players:
+        if multi_club:
+            # 교류전: 게임수 균형은 (클럽, 성별) 그룹 내부에서만 평가
             bk = state["bal_of"].get(p["id"])
             cnt = state["bal_count"].get(bk, 1)
             grp_avg = state["bal_game_sum"].get(bk, 0) / max(1, cnt)
-            new_g = state["player_games"][p["id"]] + 1
-            cost += W["game_balance"] * (new_g - grp_avg) ** 2
-    elif state["player_games"]:
-        avg_games = sum(state["player_games"].values()) / max(1, len(state["player_games"]))
-        for p in all_players:
-            new_g = state["player_games"][p["id"]] + 1
-            cost += W["game_balance"] * (new_g - avg_games) ** 2
+            base_avg = grp_avg
+        else:
+            base_avg = avg_games
+        played = state["player_games"][p["id"]]
+        cost += W["game_balance"] * (played + 1 - base_avg) ** 2
+
+        # 쉬고 있던 사람을 먼저 부른다 — 공백이 1시간 이상으로 벌어지기 전에 되돌린다.
+        slots = state["player_slots"][p["id"]]
+        ref = (max(slots) + 30) if slots else eff_in.get(p["id"], slot_start)
+        pending = slot_start - ref
+        if pending >= 30:
+            urgency = W["idle_urgency"] * min(pending / 30.0, IDLE_URGENCY_CAP)
+            # 이미 남들보다 많이 뛴 사람은 덜 당긴다 — 공백 메우기가 게임수 불균형을 만들지 않도록.
+            if played > base_avg:
+                urgency *= 0.35
+            cost -= urgency
 
     if match_type == "F" and state.get("multi_club"):
         # 교류전: 여복(여자복식)을 최우선 — 양 클럽에 여자 2명 이상이면 혼복보다 여복.
@@ -186,6 +262,9 @@ def match_cost(
     if match_type == "X":
         if pool_males_count >= 4 or pool_females_count >= 4:
             cost += W["mixed_overuse"]
+            # 평소(단일 클럽)에도 남복/여복 우선 — 단성 복식을 만들 수 있는데 혼복을 고를 때만.
+            if not state.get("multi_club"):
+                cost += W["single_mixed_nonpriority"]
         # 교류전: 단성 복식(남복/여복) 우선 — 혼복은 단성복식이 불가능할 때만.
         if state.get("multi_club"):
             cost += W["mixed_nonpriority"]
@@ -228,10 +307,19 @@ def enumerate_candidates(
         risky = [p for p in pool if is_three_streak(p["id"], slot_start, state)]
         working_pool = safe_pool + risky
 
+    eff_in = state.get("eff_in", {})
+
+    def _pending(p):
+        slots = state["player_slots"][p["id"]]
+        ref = (max(slots) + 30) if slots else eff_in.get(p["id"], slot_start)
+        return slot_start - ref
+
+    # 게임수가 적은 사람 → 오래 쉰 사람 순. 공백이 커지기 전에 후보에 들어오게 한다.
     pool_sorted = sorted(
         working_pool,
         key=lambda p: (
             state["player_games"][p["id"]],
+            -min(_pending(p), 120),
             1 if is_two_streak(p["id"], slot_start, state) else 0,
             rng.random(),
         ),
@@ -278,8 +366,22 @@ def enumerate_candidates(
     males = [p for p in top if p["gender"] == "M"]
     females = [p for p in top if p["gender"] == "F"]
 
-    if len(males) >= 4:
-        for combo in itertools.combinations(males, 4):
+    # 여복은 여자 인원이 적어 top_k 안에 4명이 다 들어오지 못할 수 있다.
+    # 남복/여복 우선 원칙을 지키려면 후보 자체가 만들어져야 하므로,
+    # 풀 전체에 여자가 4명 이상이면 게임수 적은 순 4명을 따로 확보한다.
+    if len(females) < 4 and pool_f >= 4:
+        females = [p for p in pool_sorted if p["gender"] == "F"][:max(4, len(females))]
+    if len(males) < 4 and pool_m >= 4:
+        males = [p for p in pool_sorted if p["gender"] == "M"][:max(4, len(males))]
+
+    # 조합 폭발 방지 — 어차피 '게임수 적은 순'으로 정렬돼 있어 뒤쪽은 거의 선택되지 않는다.
+    singles_m = males[:SINGLES_TOP]
+    singles_f = females[:SINGLES_TOP]
+    mixed_m = males[:MIXED_TOP]
+    mixed_f = females[:MIXED_TOP]
+
+    if len(singles_m) >= 4:
+        for combo in itertools.combinations(singles_m, 4):
             splits = [
                 ((combo[0], combo[1]), (combo[2], combo[3])),
                 ((combo[0], combo[2]), (combo[1], combo[3])),
@@ -289,8 +391,8 @@ def enumerate_candidates(
                 c = match_cost(t1, t2, "M", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "M", t1, t2))
 
-    if len(females) >= 4:
-        for combo in itertools.combinations(females, 4):
+    if len(singles_f) >= 4:
+        for combo in itertools.combinations(singles_f, 4):
             splits = [
                 ((combo[0], combo[1]), (combo[2], combo[3])),
                 ((combo[0], combo[2]), (combo[1], combo[3])),
@@ -300,9 +402,9 @@ def enumerate_candidates(
                 c = match_cost(t1, t2, "F", slot_start, state, pool_m, pool_f, court_name)
                 candidates.append((c, "F", t1, t2))
 
-    if len(males) >= 2 and len(females) >= 2:
-        for m_combo in itertools.combinations(males, 2):
-            for f_combo in itertools.combinations(females, 2):
+    if len(mixed_m) >= 2 and len(mixed_f) >= 2:
+        for m_combo in itertools.combinations(mixed_m, 2):
+            for f_combo in itertools.combinations(mixed_f, 2):
                 for swap in (False, True):
                     if not swap:
                         t1 = (m_combo[0], f_combo[0])
@@ -367,6 +469,489 @@ def pick_match(
     }
 
 
+# ---------------------------------------------------------------------------
+# 전체 대진표 평가 (시드 선택 + 로컬 개선 공통 목적함수)
+# ---------------------------------------------------------------------------
+
+def player_timing_cost(slots_sorted: list[int], eff_in: int) -> float:
+    """한 사람의 '시간표 품질' 비용.
+
+    - 도착 후 첫 경기까지의 대기 (일찍 온 사람이 일찍 끝나도록)
+    - 경기 사이 공백, 특히 1시간 이상 공백 (최우선 회피)
+    - 2슬롯/3슬롯 연속 출전
+    """
+    if not slots_sorted:
+        return 0.0
+    cost = 0.0
+    idle = 0
+
+    delay = slots_sorted[0] - eff_in
+    if delay > 0:
+        idle += delay
+        u = delay / 30.0
+        cost += G["start_delay"] * u
+        if u > 2:
+            cost += G["long_start_delay"] * (u - 2) ** 2
+
+    for i in range(1, len(slots_sorted)):
+        gap = slots_sorted[i] - slots_sorted[i - 1] - 30
+        if gap > 0:
+            idle += gap
+            u = gap / 30.0
+            cost += G["gap"] * u
+            if u >= 2:
+                cost += G["long_gap"] * (u - 1) ** 2
+
+    # 한 사람에게 노는 시간이 몰리지 않도록 볼록(제곱) 페널티.
+    # 총 유휴시간은 코트 사정상 거의 정해져 있으므로, 이 항이 그 부담을 고르게 나눈다.
+    # 결과적으로 일찍 온 사람이 일찍 끝나고(체류 = 유휴 + 경기시간), 늦게 온 사람이 뒤를 맡는다.
+    free_units = max(0.0, idle / 30.0 - 1.0)
+    if free_units > 0:
+        cost += G["idle_sq"] * free_units ** 2
+
+    for i in range(len(slots_sorted)):
+        if i >= 2 and slots_sorted[i - 1] == slots_sorted[i] - 30 and slots_sorted[i - 2] == slots_sorted[i] - 60:
+            cost += G["three_streak"]
+        elif i >= 1 and slots_sorted[i - 1] == slots_sorted[i] - 30:
+            cost += G["two_streak"]
+
+    return cost
+
+
+def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> float:
+    """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트)."""
+    t1 = [players_by_id[i] for i in match["team1"]]
+    t2 = [players_by_id[i] for i in match["team2"]]
+    cost = G["team_skill_diff"] * abs(
+        (t1[0]["exp"] + t1[1]["exp"]) - (t2[0]["exp"] + t2[1]["exp"])
+    )
+
+    mtype = match["type"]
+    if mtype == "X":
+        for team in (t1, t2):
+            male = team[0] if team[0]["gender"] == "M" else team[1]
+            female = team[1] if team[0]["gender"] == "M" else team[0]
+            if male["exp"] < female["exp"]:
+                cost += G["mixed_skill_violation"]
+        # 혼복은 차선책 — 단, 여복 페어가 반복될 수밖에 없는 상황(교류전 등)에서는
+        # 페어 중복 비용(pair_dup)이 쌓이면 혼복이 선택되도록 이 값을 과도하게 두지 않는다.
+        cost += G["mixed_match"]
+    elif mtype == "F" and multi_club:
+        cost -= G["women_doubles_bonus"]
+
+    cost += G["court_affinity"] * COURT_AFFINITY.get(str(match["court"]).upper(), {}).get(mtype, 0.0)
+
+    if match["slot_start"] < FEMALE_EARLIEST_SLOT_MIN:
+        cost += G["female_early"] * sum(1 for p in t1 + t2 if p["gender"] == "F")
+
+    for team in (t1, t2):
+        if team[0]["membership"] == team[1]["membership"]:
+            cost += G["member_guest"]
+
+    return cost
+
+
+def pair_entry_cost(count: int, hist_w: float) -> float:
+    cost = 0.0
+    if count > 1:
+        # 그리디와 같은 초선형 형태. 같은 짝이 3~4번 반복되면 비용이 급증해,
+        # (여자 인원이 적어 여복 페어가 고정되는 교류전 등에서) 혼복이 차선책으로 열린다.
+        cost += G["pair_dup"] * (count - 1) ** 2
+    if hist_w:
+        cost += G["history_pair"] * hist_w * count
+    return cost
+
+
+def fair_targets(ids: list[str], caps: dict, total_games: int) -> dict:
+    """'공평한 배정 게임수'를 물채우기(water-filling)로 계산.
+
+    최대게임수 제한이나 짧은 참석시간 때문에 애초에 많이 못 뛰는 사람이
+    평균을 끌어내려 다른 사람까지 저평가되는 문제를 없앤다.
+    """
+    pool = list(ids)
+    remaining = float(total_games)
+    out = {}
+    while pool:
+        share = remaining / len(pool) if remaining > 0 else 0.0
+        capped = [i for i in pool if caps.get(i, 10 ** 6) < share]
+        if not capped:
+            for i in pool:
+                out[i] = share
+            break
+        for i in capped:
+            out[i] = float(caps.get(i, 0))
+            remaining -= out[i]
+            pool.remove(i)
+    return out
+
+
+def balance_cost(state: dict, players: list[dict]) -> float:
+    caps = {
+        p["id"]: min(
+            p["max_games"] if p.get("max_games") else 10 ** 6,
+            len(p.get("available_slots") or []),
+        )
+        for p in players
+    }
+    groups = (state["bal_members"].values() if state.get("multi_club")
+              else [[p["id"] for p in players]])
+    cost = 0.0
+    for ids in groups:
+        if not ids:
+            continue
+        total = sum(state["player_games"][i] for i in ids)
+        targets = fair_targets(list(ids), caps, total)
+        devs = [state["player_games"][i] - targets[i] for i in ids]
+        cost += G["balance_sq"] * sum(d * d for d in devs)
+        cost += G["balance_spread"] * (max(devs) - min(devs))
+        # 공평 기준(내림)보다도 덜 뛴 사람은 사실상 금지 — 쉬는 시간·공백보다 우선한다.
+        for i in ids:
+            short = int(targets[i] + 1e-9) - state["player_games"][i]
+            if short > 0:
+                cost += G["balance_under"] * short * short
+    return cost
+
+
+def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> float:
+    players_by_id = {p["id"]: p for p in players}
+    multi = bool(state.get("multi_club"))
+    hist = state.get("hist_pair_penalty") or {}
+    score = balance_cost(state, players)
+
+    # 사람별 시간표 품질
+    eff_in = state.get("eff_in", {})
+    for p in players:
+        pid = p["id"]
+        score += player_timing_cost(sorted(state["player_slots"][pid]), eff_in.get(pid, p["in_min"]))
+
+    # 페어 중복 + 지난 대진표 반복
+    for k, c in state["pair_count"].items():
+        score += pair_entry_cost(c, hist.get(k, 0.0))
+
+    # 경기별 품질
+    for m in state["matches"]:
+        score += match_quality_cost(m, players_by_id, multi)
+
+    # 비어버린 코트-슬롯
+    feasible_court_slots = 0
+    for sl in schedule_slots:
+        n_courts = len(sl["courts"])
+        n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
+        feasible_court_slots += min(n_courts, n_avail // 4)
+    score += max(0, feasible_court_slots - len(state["matches"])) * G["missed"]
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# 로컬 개선 (Iterated Local Search)
+#   두 가지 수술로 목적함수를 낮춘다. 둘 다 경기 수·경기 종류 총계·개인 게임수를 보존한다.
+#   (1) 선수 교환: 같은 성별 두 선수를 맞바꾼다(다른 슬롯이면 시간표가, 같은 슬롯이면 페어가 바뀐다).
+#   (2) 경기 이동: 두 경기의 출전 명단을 통째로 맞바꾼다 = 경기 시간대 교체.
+#       여복처럼 '멤버가 고정된 경기'는 (1)로는 절대 못 옮기므로 (2)가 필요하다.
+#   개선이 멈추면 무작위 교란(kick) 후 다시 내리막을 타고, 가장 좋았던 상태를 보관한다.
+#   → 그리디가 빠지는 국소최적(예: 공백이 60분이 된 뒤에야 여복이 배정되는 현상)을 탈출한다.
+# ---------------------------------------------------------------------------
+SIDES = ("team1", "team2")
+ROSTER_FIELDS = ("type", "team1", "team2", "team1_names", "team2_names",
+                 "team1_exp_sum", "team2_exp_sum")
+
+
+class Refiner:
+    def __init__(self, state: dict, players: list[dict], schedule_slots: list[dict], rng: random.Random):
+        self.state = state
+        self.players = players
+        self.schedule_slots = schedule_slots
+        self.rng = rng
+        self.pbid = {p["id"]: p for p in players}
+        self.multi = bool(state.get("multi_club"))
+        self.hist = state.get("hist_pair_penalty") or {}
+        self.eff_in = state.get("eff_in", {})
+        self.avail = {p["id"]: set(p.get("available_slots") or []) for p in players}
+        self._sync()
+
+    # -- 파생 캐시 -----------------------------------------------------------
+    def _sync(self) -> None:
+        self.matches = self.state["matches"]
+        self.slots_of = {pid: sorted(sl) for pid, sl in self.state["player_slots"].items()}
+        self.positions = [
+            (mi, side, idx)
+            for mi in range(len(self.matches))
+            for side in SIDES
+            for idx in (0, 1)
+        ]
+        # 교환 후보는 '같은 성별(교류전이면 같은 클럽)'끼리만 가능하므로 미리 묶어 둔다.
+        self.pos_groups = {}
+        for pos in self.positions:
+            mi, side, idx = pos
+            self.pos_groups.setdefault(self._group_key(self.matches[mi][side][idx]), []).append(pos)
+        self.qcache = [self.quality(m) for m in self.matches]
+        self.tcache = {pid: self.timing(pid, sl) for pid, sl in self.slots_of.items()}
+
+    def _group_key(self, pid):
+        p = self.pbid[pid]
+        return (p["gender"], p.get("club", "")) if self.multi else p["gender"]
+
+    def timing(self, pid, slots) -> float:
+        return player_timing_cost(slots, self.eff_in.get(pid, self.pbid[pid]["in_min"]))
+
+    def quality(self, m) -> float:
+        return match_quality_cost(m, self.pbid, self.multi)
+
+    def score(self) -> float:
+        return full_score(self.state, self.players, self.schedule_slots)
+
+    def snapshot(self):
+        return (
+            [{k: (list(v) if isinstance(v, list) else v) for k, v in m.items()} for m in self.matches],
+            {k: list(v) for k, v in self.state["player_slots"].items()},
+            dict(self.state["pair_count"]),
+        )
+
+    def restore(self, snap) -> None:
+        ms, ps, pc = snap
+        self.state["matches"] = [{k: (list(v) if isinstance(v, list) else v) for k, v in m.items()} for m in ms]
+        self.state["player_slots"] = {k: list(v) for k, v in ps.items()}
+        self.state["pair_count"] = dict(pc)
+        self._sync()
+
+    # -- (1) 선수 교환 -------------------------------------------------------
+    def _player_swap_plan(self, p1, p2):
+        """교환 가능하면 (delta, new_sa, new_sb, pair_changes), 아니면 None."""
+        mi1, side1, idx1 = p1
+        mi2, side2, idx2 = p2
+        if mi1 == mi2:
+            return None
+        m1, m2 = self.matches[mi1], self.matches[mi2]
+        s1, s2 = m1["slot_start"], m2["slot_start"]
+        a_id, b_id = m1[side1][idx1], m2[side2][idx2]
+        A, B = self.pbid[a_id], self.pbid[b_id]
+        if A["gender"] != B["gender"]:
+            return None
+        if self.multi and A.get("club", "") != B.get("club", ""):
+            return None
+
+        sa, sb = self.slots_of[a_id], self.slots_of[b_id]
+        if s1 == s2:
+            new_sa = new_sb = None          # 같은 시간대 — 시간표는 그대로, 페어/구력만 바뀐다
+            delta = 0.0
+        else:
+            if s2 not in self.avail[a_id] or s1 not in self.avail[b_id]:
+                return None
+            if s2 in sa or s1 in sb:
+                return None
+            new_sa = sorted([s for s in sa if s != s1] + [s2])
+            new_sb = sorted([s for s in sb if s != s2] + [s1])
+            delta = (self.timing(a_id, new_sa) - self.tcache[a_id]
+                     + self.timing(b_id, new_sb) - self.tcache[b_id])
+
+        old_q = self.qcache[mi1] + self.qcache[mi2]
+        m1[side1][idx1], m2[side2][idx2] = b_id, a_id
+        new_q = self.quality(m1) + self.quality(m2)
+        m1[side1][idx1], m2[side2][idx2] = a_id, b_id
+        delta += new_q - old_q
+
+        pa = m1[side1][1 - idx1]
+        pb = m2[side2][1 - idx2]
+        changes = {}
+        for k, d in ((pair_key(a_id, pa), -1), (pair_key(b_id, pb), -1),
+                     (pair_key(b_id, pa), +1), (pair_key(a_id, pb), +1)):
+            changes[k] = changes.get(k, 0) + d
+        for k, d in changes.items():
+            if not d:
+                continue
+            old_c = self.state["pair_count"].get(k, 0)
+            w = self.hist.get(k, 0.0)
+            delta += pair_entry_cost(old_c + d, w) - pair_entry_cost(old_c, w)
+        return delta, new_sa, new_sb, changes
+
+    def _player_swap_commit(self, p1, p2, new_sa, new_sb, changes) -> None:
+        mi1, side1, idx1 = p1
+        mi2, side2, idx2 = p2
+        m1, m2 = self.matches[mi1], self.matches[mi2]
+        a_id, b_id = m1[side1][idx1], m2[side2][idx2]
+        m1[side1][idx1], m2[side2][idx2] = b_id, a_id
+        for m in (m1, m2):
+            for side in SIDES:
+                ids = m[side]
+                m[f"{side}_names"] = [self.pbid[x]["name"] for x in ids]
+                m[f"{side}_exp_sum"] = self.pbid[ids[0]]["exp"] + self.pbid[ids[1]]["exp"]
+        if new_sa is not None:
+            self.slots_of[a_id] = new_sa
+            self.slots_of[b_id] = new_sb
+            self.state["player_slots"][a_id] = list(new_sa)
+            self.state["player_slots"][b_id] = list(new_sb)
+            self.tcache[a_id] = self.timing(a_id, new_sa)
+            self.tcache[b_id] = self.timing(b_id, new_sb)
+        for k, d in changes.items():
+            if not d:
+                continue
+            self.state["pair_count"][k] = self.state["pair_count"].get(k, 0) + d
+            if self.state["pair_count"][k] <= 0:
+                self.state["pair_count"].pop(k, None)
+        # 같은 성별(교류전이면 같은 클럽)끼리만 교환하므로 pos_groups는 그대로 유효하다.
+        self.qcache[mi1] = self.quality(m1)
+        self.qcache[mi2] = self.quality(m2)
+
+    # -- (2) 경기 이동 -------------------------------------------------------
+    def _match_swap_plan(self, mi1, mi2):
+        m1, m2 = self.matches[mi1], self.matches[mi2]
+        s1, s2 = m1["slot_start"], m2["slot_start"]
+        if s1 == s2:
+            return None
+        r1 = m1["team1"] + m1["team2"]
+        r2 = m2["team1"] + m2["team2"]
+        set1, set2 = set(r1), set(r2)
+        movers = [(pid, s1, s2) for pid in r1 if pid not in set2]
+        movers += [(pid, s2, s1) for pid in r2 if pid not in set1]
+        new_slots, delta = {}, 0.0
+        for pid, frm, to in movers:
+            if to not in self.avail[pid] or to in self.slots_of[pid]:
+                return None
+            cur = self.slots_of[pid]
+            nxt = sorted([s for s in cur if s != frm] + [to])
+            new_slots[pid] = nxt
+            delta += self.timing(pid, nxt) - self.tcache[pid]
+
+        old_q = self.qcache[mi1] + self.qcache[mi2]
+        saved1 = {f: m1[f] for f in ROSTER_FIELDS}
+        saved2 = {f: m2[f] for f in ROSTER_FIELDS}
+        for f in ROSTER_FIELDS:
+            m1[f], m2[f] = saved2[f], saved1[f]
+        new_q = self.quality(m1) + self.quality(m2)
+        for f in ROSTER_FIELDS:
+            m1[f], m2[f] = saved1[f], saved2[f]
+        return delta + new_q - old_q, new_slots
+
+    def _match_swap_commit(self, mi1, mi2, new_slots) -> None:
+        m1, m2 = self.matches[mi1], self.matches[mi2]
+        saved1 = {f: m1[f] for f in ROSTER_FIELDS}
+        saved2 = {f: m2[f] for f in ROSTER_FIELDS}
+        for f in ROSTER_FIELDS:
+            m1[f], m2[f] = saved2[f], saved1[f]
+        for pid, nxt in new_slots.items():
+            self.slots_of[pid] = nxt
+            self.state["player_slots"][pid] = list(nxt)
+            self.tcache[pid] = self.timing(pid, nxt)
+        self.qcache[mi1] = self.quality(m1)
+        self.qcache[mi2] = self.quality(m2)
+        # 명단이 통째로 이동하므로 이 두 경기의 자리에는 성별 구성이 달라질 수 있다 → 후보 묶음 재계산
+        self._regroup_positions((mi1, mi2))
+
+    def _regroup_positions(self, match_indices) -> None:
+        touched = set(match_indices)
+        for key in list(self.pos_groups):
+            self.pos_groups[key] = [p for p in self.pos_groups[key] if p[0] not in touched]
+        for mi in touched:
+            for side in SIDES:
+                for idx in (0, 1):
+                    key = self._group_key(self.matches[mi][side][idx])
+                    self.pos_groups.setdefault(key, []).append((mi, side, idx))
+
+    # -- 내리막 탐색 ---------------------------------------------------------
+    def descend(self, max_passes: int = 12) -> int:
+        moves = 0
+        for _ in range(max_passes):
+            did = 0
+            order = list(range(len(self.matches)))
+            self.rng.shuffle(order)
+            for ii in range(len(order)):
+                for jj in range(ii + 1, len(order)):
+                    plan = self._match_swap_plan(order[ii], order[jj])
+                    if plan and plan[0] < -1e-9:
+                        self._match_swap_commit(order[ii], order[jj], plan[1])
+                        did += 1
+                        break
+            for group in self.pos_groups.values():
+                if len(group) < 2:
+                    continue
+                self.rng.shuffle(group)
+                for i in range(len(group)):
+                    for j in range(i + 1, len(group)):
+                        plan = self._player_swap_plan(group[i], group[j])
+                        if plan and plan[0] < -1e-9:
+                            self._player_swap_commit(group[i], group[j], *plan[1:])
+                            did += 1
+                            break
+            moves += did
+            if did == 0:
+                break
+        return moves
+
+    def _worst_positions(self, top: int = 5):
+        """시간표가 가장 나쁜(공백·대기가 큰) 선수들이 들어있는 자리 목록."""
+        ranked = sorted(self.tcache, key=lambda pid: -self.tcache[pid])[:top]
+        worst = set(ranked)
+        return [pos for pos in self.positions if self.matches[pos[0]][pos[1]][pos[2]] in worst]
+
+    def kick(self, strength: int = 2) -> None:
+        """무작위 실행 가능 수를 강제로 적용해 국소최적에서 빠져나온다.
+
+        절반 정도는 '공백·대기가 가장 심한 선수'가 낀 경기를 골라 흔든다 —
+        정작 고쳐야 할 곳을 건드릴 확률을 높이기 위함.
+        """
+        n_m, n_p = len(self.matches), len(self.positions)
+        if self.rng.random() < 0.5:
+            hot = self._worst_positions()
+            if hot:
+                target = hot[self.rng.randrange(len(hot))]
+                key = self._group_key(self.matches[target[0]][target[1]][target[2]])
+                group = self.pos_groups.get(key, [])
+                for _ in range(40):
+                    other = group[self.rng.randrange(len(group))] if group else None
+                    if other is None:
+                        break
+                    plan = self._player_swap_plan(target, other)
+                    if plan:
+                        self._player_swap_commit(target, other, *plan[1:])
+                        break
+        for _ in range(strength):
+            if self.rng.random() < 0.6 and n_m > 1:
+                for _ in range(25):
+                    mi1, mi2 = self.rng.randrange(n_m), self.rng.randrange(n_m)
+                    if mi1 == mi2:
+                        continue
+                    plan = self._match_swap_plan(mi1, mi2)
+                    if plan:
+                        self._match_swap_commit(mi1, mi2, plan[1])
+                        break
+            elif n_p > 1:
+                groups = [g for g in self.pos_groups.values() if len(g) > 1]
+                if not groups:
+                    continue
+                for _ in range(40):
+                    g = groups[self.rng.randrange(len(groups))]
+                    p1 = g[self.rng.randrange(len(g))]
+                    p2 = g[self.rng.randrange(len(g))]
+                    plan = self._player_swap_plan(p1, p2)
+                    if plan:
+                        self._player_swap_commit(p1, p2, *plan[1:])
+                        break
+
+    def run(self, kicks: int = 30, max_passes: int = 12) -> float:
+        """교란 → 내리막 → 채택 판정을 반복. 최고 기록은 따로 보관한다.
+
+        약간 나빠지는 결과도 초반에는 받아들여(tolerance) 탐색이 한 골짜기에 갇히지 않게 한다.
+        """
+        self.descend(max_passes)
+        cur_score = self.score()
+        cur = self.snapshot()
+        best_score, best = cur_score, cur
+        for k in range(kicks):
+            self.kick()
+            self.descend(max_passes)
+            sc = self.score()
+            if sc < best_score - 1e-9:
+                best_score, best = sc, self.snapshot()
+            tol = G["accept_tolerance"] * (1.0 - k / max(1, kicks))
+            if sc <= cur_score + tol:
+                cur_score, cur = sc, self.snapshot()
+            else:
+                self.restore(cur)
+        self.restore(best)
+        return best_score
+
+
 def run_one_seed(
     players: list[dict],
     schedule_slots: list[dict],
@@ -376,7 +961,6 @@ def run_one_seed(
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
     state = init_state(players, hist_pairs)
-    players_by_id = {p["id"]: p for p in players}
 
     for slot in schedule_slots:
         played_here = set()
@@ -409,62 +993,84 @@ def run_one_seed(
             update_state(state, m)
             played_here.update(m["team1"] + m["team2"])
 
-    score = 0.0
-    if state.get("multi_club"):
-        # 교류전: (클럽, 성별) 그룹 내부에서만 게임수 균형을 평가
-        for ids in state["bal_members"].values():
-            gs = [state["player_games"][i] for i in ids]
-            if gs:
-                avg = sum(gs) / len(gs)
-                score += sum((g - avg) ** 2 for g in gs) * 5.0
-                score += (max(gs) - min(gs)) * 10.0
-    else:
-        games = list(state["player_games"].values())
-        if games:
-            avg = sum(games) / len(games)
-            score += sum((g - avg) ** 2 for g in games) * 5.0
-            score += (max(games) - min(games)) * 10.0
+    return state, full_score(state, players, schedule_slots)
 
-    pair_dups = sum(c - 1 for c in state["pair_count"].values() if c > 1)
-    score += pair_dups * 30.0
 
-    # 시드 선택 시에도 지난주/2주전 반복 페어가 적은 대진표를 선호하도록 점수에 반영.
-    hist_pen = state.get("hist_pair_penalty")
-    if hist_pen:
-        hist_rep = 0.0
-        for k, cnt in state["pair_count"].items():
-            w = hist_pen.get(k)
-            if w:
-                hist_rep += w * cnt
-        score += hist_rep * 30.0
+def solve(
+    players: list[dict],
+    schedule_slots: list[dict],
+    seed: int = 7,
+    iters: int = 40,
+    candidates: int = 24,
+    hist_pairs=None,
+    refine: int = 10,
+    kicks: int = 60,
+    progress=None,
+) -> dict:
+    """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
 
-    three_streak = 0
-    two_streak = 0
-    for p_id, slots in state["player_slots"].items():
-        slots_sorted = sorted(slots)
-        for i, s in enumerate(slots_sorted):
-            if i >= 2 and slots_sorted[i - 1] == s - 30 and slots_sorted[i - 2] == s - 60:
-                three_streak += 1
-            elif i >= 1 and slots_sorted[i - 1] == s - 30:
-                two_streak += 1
-    score += three_streak * 200.0
-    score += two_streak * 2.0
+    CLI(main)와 웹(Pyodide run.py)이 공유하는 단일 진입점.
+    """
+    results = []
+    for i in range(max(1, iters)):
+        s = seed + i
+        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs)
+        results.append((score, s, state))
+        if progress and (i + 1) % 10 == 0:
+            progress(f"초안 {i + 1}/{iters}개 생성")
 
-    total = sum(state["type_count"].values())
-    if total > 0:
-        mixed_ratio = state["type_count"]["X"] / total
-        score += mixed_ratio * 20.0
+    results.sort(key=lambda x: x[0])
+    best_score, best_seed, best_state = results[0]
 
-    feasible_court_slots = 0
-    for sl in schedule_slots:
-        n_courts = len(sl["courts"])
-        n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
-        feasible_court_slots += min(n_courts, n_avail // 4)
-    actual_matches = len(state["matches"])
-    missed = max(0, feasible_court_slots - actual_matches)
-    score += missed * 5000.0
+    for n, (score, s, state) in enumerate(results[: max(0, refine)], 1):
+        refiner = Refiner(state, players, schedule_slots, random.Random(s * 7919 + 13))
+        new_score = refiner.run(kicks=kicks)
+        if new_score < best_score:
+            best_state, best_score, best_seed = state, new_score, s
+        if progress:
+            progress(f"공백·대기 줄이기 {n}/{min(refine, len(results))}")
 
-    return state, score
+    eff_in = best_state.get("eff_in", {})
+    player_stats = []
+    for p in players:
+        pid = p["id"]
+        slots = sorted(best_state["player_slots"][pid])
+        gaps = [slots[i] - slots[i - 1] - 30 for i in range(1, len(slots))]
+        e_in = eff_in.get(pid, p["in_min"])
+        player_stats.append({
+            "id": pid,
+            "name": p["name"],
+            "gender": p["gender"],
+            "exp": p["exp"],
+            "membership": p["membership"],
+            "club": p.get("club", ""),
+            "games": best_state["player_games"][pid],
+            "available_slots": len(p["available_slots"]),
+            "slots_played": slots,
+            "in_min": p["in_min"],
+            "out_min": p["out_min"],
+            "max_games": p.get("max_games"),
+            # 시간표 품질 지표
+            "eff_in": e_in,
+            "start_delay": (slots[0] - e_in) if slots else 0,
+            "gaps": gaps,
+            "long_gaps": sum(1 for g in gaps if g >= 60),
+            "finish_min": (slots[-1] + 30) if slots else None,
+        })
+
+    return {
+        "matches": best_state["matches"],
+        "player_stats": player_stats,
+        "type_count": best_state["type_count"],
+        "metadata": {
+            "seed": best_seed,
+            "score": best_score,
+            "iterations": iters,
+            "candidates_top_n": candidates,
+            "refine_seeds": refine,
+            "kicks": kicks,
+        },
+    }
 
 
 def main():
@@ -472,8 +1078,12 @@ def main():
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--iters", type=int, default=80)
+    ap.add_argument("--iters", type=int, default=40)
     ap.add_argument("--candidates", type=int, default=24)
+    ap.add_argument("--refine", type=int, default=10,
+                    help="상위 N개 시드에 대해 로컬 개선(선수 교환/경기 이동)을 수행 (0=끔)")
+    ap.add_argument("--kicks", type=int, default=60,
+                    help="로컬 개선에서 국소최적 탈출용 무작위 교란 횟수")
     ap.add_argument("--history", default="",
                     help="지난주/2주전 페어 회피용 히스토리 JSON (history.py 산출물). 단일 클럽일 때만 반영.")
     args = ap.parse_args()
@@ -495,60 +1105,28 @@ def main():
             applied = build_hist_penalty(players, hist_pairs)
             print(f"[안내] 지난주 페어 회피 반영: 히스토리 {len(hist_pairs)}쌍 중 이번 주 명단과 겹치는 {len(applied)}쌍 회피 대상.")
 
-    best_state, best_score = None, float("inf")
-    best_seed = args.seed
-    for i in range(args.iters):
-        seed = args.seed + i
-        state, score = run_one_seed(players, schedule_slots, seed, args.candidates, hist_pairs)
-        if score < best_score:
-            best_state, best_score = state, score
-            best_seed = seed
+    out = solve(
+        players, schedule_slots,
+        seed=args.seed, iters=args.iters, candidates=args.candidates,
+        hist_pairs=hist_pairs, refine=args.refine, kicks=args.kicks,
+    )
 
-    if best_state is None:
-        print("[에러] 대진 생성 실패: 가용 인원 부족", file=sys.stderr)
-        sys.exit(1)
-
-    name_by_id = {p["id"]: p["name"] for p in players}
-    player_stats = []
-    for p in players:
-        pid = p["id"]
-        slots = sorted(best_state["player_slots"][pid])
-        player_stats.append({
-            "id": pid,
-            "name": p["name"],
-            "gender": p["gender"],
-            "exp": p["exp"],
-            "membership": p["membership"],
-            "club": p.get("club", ""),
-            "games": best_state["player_games"][pid],
-            "available_slots": len(p["available_slots"]),
-            "slots_played": slots,
-            "in_min": p["in_min"],
-            "out_min": p["out_min"],
-            "max_games": p.get("max_games"),
-        })
-
-    out = {
-        "matches": best_state["matches"],
-        "player_stats": player_stats,
-        "type_count": best_state["type_count"],
-        "metadata": {
-            "seed": best_seed,
-            "score": best_score,
-            "iterations": args.iters,
-            "candidates_top_n": args.candidates,
-        },
-    }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
 
+    player_stats = out["player_stats"]
+    tc = out["type_count"]
+    long_gap_total = sum(s["long_gaps"] for s in player_stats)
+    idle_total = sum(sum(g for g in s["gaps"] if g > 0) + s["start_delay"] for s in player_stats)
+
     print(f"[OK] 대진 생성 완료: {args.out}")
-    print(f"  매치: {len(best_state['matches'])}개  (남복 {best_state['type_count']['M']} / 여복 {best_state['type_count']['F']} / 혼복 {best_state['type_count']['X']})")
-    print(f"  베스트 시드: {best_seed}, 점수: {best_score:.2f}")
+    print(f"  매치: {len(out['matches'])}개  (남복 {tc['M']} / 여복 {tc['F']} / 혼복 {tc['X']})")
+    print(f"  베스트 시드: {out['metadata']['seed']}, 점수: {out['metadata']['score']:.2f}")
     games_list = [s["games"] for s in player_stats]
     if games_list:
         print(f"  게임수: min={min(games_list)}, max={max(games_list)}, avg={sum(games_list)/len(games_list):.1f}")
+    print(f"  1시간 이상 공백: {long_gap_total}건, 총 대기시간 {idle_total}분")
 
 
 if __name__ == "__main__":

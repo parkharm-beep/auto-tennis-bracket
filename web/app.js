@@ -167,8 +167,11 @@ runBtn.addEventListener("click", async () => {
         prev2,
         dateStr: dateEl.value || defaultDateStr(),
         seed: parseInt(seedEl.value, 10) || 7,
-        iters: parseInt(itersEl.value, 10) || 150,
+        iters: parseInt(itersEl.value, 10) || 20,
         title: titleEl.value || "우리 테니스 클럽 대진표",
+        // 공백·대기 줄이기(로컬 개선) 강도. 브라우저는 네이티브보다 느려 CLI 기본값보다 낮게 잡는다.
+        refine: 6,
+        kicks: 40,
       },
     },
     transfer
@@ -200,6 +203,8 @@ function handleDone({ xlsx, review, summary, elapsed }) {
       <p><strong>판정</strong>: <span class="verdict verdict-${v.toLowerCase()}">${v}</span></p>
       <p><strong>게임수</strong> 평균 ${s.games_avg} (min ${s.games_min} / max ${s.games_max}, 격차 ${s.game_gap_global})</p>
       <p><strong>페어 중복</strong> ${s.pair_dup_count}쌍 · <strong>3연속</strong> ${s.three_consec}건</p>
+      <p><strong>복식 구성</strong> 남복 ${(s.type_count || {}).M ?? 0} / 여복 ${(s.type_count || {}).F ?? 0} / 혼복 ${(s.type_count || {}).X ?? 0} (혼복 ${Math.round((s.mixed_ratio || 0) * 100)}%)</p>
+      <p><strong>1시간 이상 공백</strong> ${s.long_gaps ?? 0}건 / ${s.long_gap_players ?? 0}명 (최장 ${s.long_gap_worst ?? 0}분) · <strong>마지막 경기 종료</strong> ${s.last_match_end || "-"}</p>
       ${
         summary.history_ignored_exchange
           ? `<p><strong>지난 대진표 페어 회피</strong> 교류전이라 미적용</p>`

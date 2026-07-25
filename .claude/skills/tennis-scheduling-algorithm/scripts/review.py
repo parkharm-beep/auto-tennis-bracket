@@ -21,6 +21,9 @@ THRESHOLDS = dict(
     team_skill_max=7,
     mixed_skill_violations=0,
     mixed_ratio_balanced=0.25,
+    long_gap_min=60,        # 경기 사이 이 시간 이상 비면 '긴 공백'
+    long_gap_rate=0.30,     # 참가자 대비 긴 공백 발생 비율이 이보다 크면 재시도
+    long_gap_max_per_player=1,
 )
 
 
@@ -185,6 +188,42 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["two_consec"] = two_consec
     scores["three_consec_max_per_player"] = max(three_consec_per_player.values(), default=0)
 
+    # 경기 사이 긴 공백 (1시간 이상 쉬었다 다시 나오는 경우) + 체류/대기 시간
+    long_gaps, long_gap_players, total_idle = 0, 0, 0
+    worst_gap = 0
+    finish_max = 0
+    for s in player_stats:
+        slots = sorted(s["slots_played"])
+        if not slots:
+            continue
+        gaps = [slots[i] - slots[i - 1] - 30 for i in range(1, len(slots))]
+        mine = [g for g in gaps if g >= THRESHOLDS["long_gap_min"]]
+        # 대기 = 실질 도착(eff_in, 여성 07:30 회피·코트 개장 반영) 후 첫 경기까지 + 경기 사이 공백
+        start_delay = s.get("start_delay")
+        if start_delay is None:
+            start_delay = max(0, slots[0] - s.get("eff_in", s["in_min"]))
+        total_idle += start_delay + sum(g for g in gaps if g > 0)
+        finish_max = max(finish_max, slots[-1] + 30)
+        if mine:
+            long_gaps += len(mine)
+            long_gap_players += 1
+            worst_gap = max(worst_gap, max(mine))
+            for i in range(1, len(slots)):
+                g = slots[i] - slots[i - 1] - 30
+                if g >= THRESHOLDS["long_gap_min"]:
+                    issues.append({
+                        "severity": "medium" if g <= 60 else "high",
+                        "code": "long_rest_gap",
+                        "msg": f"{s['name']}: {min_to_hhmm(slots[i-1]+30)}~{min_to_hhmm(slots[i])} "
+                               f"{g}분 공백 (1시간 이상 쉬었다 재출전)",
+                    })
+    scores["long_gaps"] = long_gaps
+    scores["long_gap_players"] = long_gap_players
+    scores["long_gap_worst"] = worst_gap
+    scores["long_gap_rate"] = round(long_gap_players / len(player_stats), 4) if player_stats else 0
+    scores["total_idle_min"] = total_idle
+    scores["last_match_end"] = min_to_hhmm(finish_max) if finish_max else "-"
+
     exps = [p["exp"] for p in parsed["players"]]
     if len(exps) > 1:
         mean_exp = sum(exps) / len(exps)
@@ -271,6 +310,12 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         verdict = "RETRY"
     if scores["three_consec_max_per_player"] > THRESHOLDS["three_consec_per_player"]:
         verdict = "RETRY"
+    # 코트 대비 인원이 많으면 공백은 구조적으로 불가피 — 참가자 대비 비율로만 판정한다.
+    if scores["long_gap_rate"] > THRESHOLDS["long_gap_rate"]:
+        verdict = "RETRY"
+        issues.append({"severity": "high", "code": "long_gap_rate",
+                       "msg": f"1시간 이상 공백을 겪는 인원 비율 {scores['long_gap_rate']*100:.0f}% "
+                              f"> {THRESHOLDS['long_gap_rate']*100:.0f}%"})
     if not is_exchange and scores["team_skill_avg"] > THRESHOLDS["team_skill_avg"]:
         verdict = "RETRY"
     if not is_exchange and scores["team_skill_max_normal"] > THRESHOLDS["team_skill_max"]:
@@ -317,6 +362,9 @@ def print_report(review: dict) -> None:
         print(f"지난 대진표 대비 반복 페어: {s.get('history_repeat_pairs', 0)}쌍 "
               f"(비교 대상 {s['history_pairs_available']}쌍)")
     print(f"연속 출전: 2슬롯연속 {s['two_consec']}회, 3슬롯연속 {s['three_consec']}회")
+    print(f"1시간 이상 공백: {s['long_gaps']}건 / {s['long_gap_players']}명 "
+          f"({s['long_gap_rate']*100:.0f}%), 최장 {s['long_gap_worst']}분")
+    print(f"총 대기시간(도착~마지막경기 중 안 뛰는 시간): {s['total_idle_min']}분, 마지막 경기 종료 {s['last_match_end']}")
     print(f"팀 구력차: 평균 {s['team_skill_avg']}, 최대 {s['team_skill_max']}")
     print(f"혼복 비율: {s['mixed_ratio']*100:.1f}%")
     print(f"혼복 규칙 위반: {s['mixed_skill_violations']}건")
