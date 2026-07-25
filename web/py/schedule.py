@@ -33,6 +33,7 @@ W = dict(
                                 # 지난주 회피 때문에 이번 주 안에서 같은 짝을 반복하는 자기모순을 막기 위함.
     quad_repeat=15.0,           # 같은 4명이 편만 바꿔 다시 만남 (약하게)
     matchup_repeat=90.0,        # 같은 4명이 '상대편까지 그대로' 다시 만남 (강하게)
+    mixed_below_min=40.0,       # 최소 보장 판수를 못 채운 동안 혼복 우대 (음수 비용)
     single_mixed_nonpriority=70.0,
     # ↑ 평소(단일 클럽)에도 남복/여복 우선. 혼복은 '단성 복식이 가능한데도' 고를 때만 페널티.
     #   페어 중복 첫 발생 비용(pair_repeat 20 → 40)보다 크게 두어, 페어가 한 번 겹치는 정도는
@@ -69,6 +70,7 @@ G = dict(
     two_streak=2.0,
     mixed_match=20.0,           # 허용량 이내의 혼복 1경기당 페널티
     mixed_over_quota=220.0,     # 허용량을 넘는 혼복 (초과 경기수)^2 — 사실상 상한
+    mixed_below_min=300.0,      # 최소 보장 판수에 못 미치는 혼복 (부족 경기수)^2 — 사실상 하한
     # ↑ 혼복 억제의 주 장치는 그리디의 single_mixed_nonpriority(중복 없는 단성 복식이
     #   가능할 때만 부과)다. 여기서 과하게 잡으면 '단성 복식이 더 못 나오는 상황'에서도
     #   혼복이 막혀 여자 게임수가 깎이므로 낮게 둔다.
@@ -92,9 +94,11 @@ FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
 # 교류전: 같은 클럽 안에서 (최대 게임수 - 최소 게임수) 격차를 이 값 이내로 제한.
 SPREAD_CAP = 2
 
-# 교류전에서 허용하는 혼복 경기 수. 한쪽 클럽 여자가 2~3명이면 여복 페어가 사실상 고정되어
-# 같은 대진이 반복되므로, 그 완충으로 1~2판은 열어 둔다.
-EXCHANGE_MIXED_QUOTA = 2
+# 여자가 이 인원 이하면 혼복을 기본으로 1~2판 넣는다.
+# 여복만 돌리면 늘 같은 사람끼리 붙게 되므로, 섞어서 재미를 확보하는 용도.
+MIXED_SMALL_WOMEN = 6
+MIXED_MIN_GAMES = 1       # 최소 보장 판수
+MIXED_DEFAULT_QUOTA = 2   # 그때의 허용 상한 (= "1~2게임 정도")
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -165,33 +169,62 @@ def build_hist_penalty(players: list[dict], hist_pairs) -> dict:
     return pen
 
 
-def mixed_quota(players: list[dict], schedule_slots: list[dict] | None) -> int:
-    """'남복/여복 우선' 원칙을 지키면서도 허용할 혼복 경기 수.
+def _mixed_possible(players: list[dict], multi: bool) -> bool:
+    """혼복 경기를 만들 수 있는 인원 구성인지."""
+    n_m = sum(1 for p in players if p["gender"] == "M")
+    n_f = len(players) - n_m
+    if n_m < 2 or n_f < 2:
+        return False
+    if not multi:
+        return True
+    # 교류전은 각 팀이 '같은 클럽 남1+여1'이어야 하므로, 그런 클럽이 둘 이상 있어야 한다.
+    ok_clubs = 0
+    by_club: dict = {}
+    for p in players:
+        by_club.setdefault(p.get("club", ""), set()).add(p["gender"])
+    for genders in by_club.values():
+        if {"M", "F"} <= genders:
+            ok_clubs += 1
+    return ok_clubs >= 2
 
-    소수 성별이 정확히 4~5명이면 중복 없는 단성 복식을 몇 판밖에 못 만든다
-    (여자 4명 → 편 가르는 방법이 3가지뿐 → 여복 3판이 한계).
-    그 이상 뛰려면 같은 4명이 상대편까지 똑같이 다시 붙어야 하므로,
-    모자란 게임수만큼만 혼복으로 채운다. 그 이상은 원칙대로 페널티.
+
+def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
+                 multi: bool = False) -> tuple[int, int]:
+    """혼복 경기 수의 (최소 보장, 허용 상한).
+
+    - 남복/여복이 원칙이지만, **여자가 적으면 혼복을 기본으로 1~2판 넣는다.**
+      (여자 6명 이하 → 여복만 돌리면 늘 같은 사람끼리라 재미가 없다)
+    - 소수 성별이 4~5명이면 중복 없는 단성 복식을 몇 판밖에 못 만든다
+      (여자 4명 → 편 가르는 방법이 3가지뿐 → 여복 3판이 한계).
+      그 이상 뛰려면 같은 4명이 상대편까지 똑같이 다시 붙어야 하므로,
+      모자란 게임수만큼 상한을 더 올린다.
+    - 상한을 넘는 혼복은 원칙대로 급격한 페널티.
     """
+    if not _mixed_possible(players, multi):
+        return 0, 0
+
     n = len(players)
     n_m = sum(1 for p in players if p["gender"] == "M")
     n_f = n - n_m
     minority = min(n_m, n_f)
     if minority < 4:
-        return 10 ** 6          # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
-    if minority >= 6:
-        return 0                # 단성 복식만으로 충분히 다양하게 짤 수 있다
-    clean_singles_max = 3 if minority == 4 else 6   # 중복 없이 만들 수 있는 단성 복식 판수
+        return 0, 10 ** 6       # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
 
-    total_matches = 0
-    for sl in (schedule_slots or []):
-        n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
-        total_matches += min(len(sl["courts"]), n_avail // 4)
-    if not total_matches or not n:
-        return 0
-    target = round(4 * total_matches / n)           # 1인당 공평 게임수
-    need = max(0, target - clean_singles_max)       # 단성 복식만으로 못 채우는 게임수
-    return -(-minority * need // 2)                 # 혼복 1판이 소수 성별 2명을 태운다
+    quota = 0
+    if minority <= 5:
+        clean_singles_max = 3 if minority == 4 else 6   # 중복 없이 만들 수 있는 단성 복식 판수
+        total_matches = 0
+        for sl in (schedule_slots or []):
+            n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
+            total_matches += min(len(sl["courts"]), n_avail // 4)
+        if total_matches and n:
+            target = round(4 * total_matches / n)       # 1인당 공평 게임수
+            need = max(0, target - clean_singles_max)   # 단성 복식만으로 못 채우는 게임수
+            quota = -(-minority * need // 2)            # 혼복 1판이 소수 성별 2명을 태운다
+
+    if n_f <= MIXED_SMALL_WOMEN:
+        return MIXED_MIN_GAMES, max(quota, MIXED_DEFAULT_QUOTA)
+    return 0, quota
 
 
 def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dict:
@@ -209,6 +242,7 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dic
     bal_members = {}
     for p in players:
         bal_members.setdefault(bkey(p), []).append(p["id"])
+    mixed_min, mixed_max = mixed_limits(players, schedule_slots, multi)
     return {
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
@@ -228,9 +262,9 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dic
         "gender_sum": {"M": 0, "F": 0},
         "hist_pair_penalty": hist_pair_penalty,
         "eff_in": build_eff_in(players),
-        # 교류전은 (클럽, 성별)별 인원이 제각각이라 단순 계산 대신 고정 허용량을 쓴다.
-        # (한쪽 클럽 여자가 2명이면 여복 페어가 아예 고정되므로 완충이 반드시 필요)
-        "mixed_quota": EXCHANGE_MIXED_QUOTA if multi else mixed_quota(players, schedule_slots),
+        # 혼복 판수의 하한/상한. 교류전도 같은 규칙(팀은 같은 클럽 남1+여1이 되는지까지 확인).
+        "mixed_min": mixed_min,
+        "mixed_quota": mixed_max,
     }
 
 
@@ -356,6 +390,9 @@ def match_cost(
         cost -= W["women_doubles_bonus"]
 
     if match_type == "X":
+        # 최소 보장 판수를 아직 못 채웠으면 혼복을 오히려 우대해 초안에 확실히 등장시킨다.
+        if state["type_count"]["X"] < state.get("mixed_min", 0):
+            cost -= W["mixed_below_min"]
         if pool_males_count >= 4 or pool_females_count >= 4:
             cost += W["mixed_overuse"]
             # 평소(단일 클럽)에도 남복/여복 우선.
@@ -808,6 +845,8 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
     quota = state.get("mixed_quota", 0)
     score += G["mixed_match"] * min(n_mixed, quota)
     score += G["mixed_over_quota"] * max(0, n_mixed - quota) ** 2
+    # 여자가 적으면(6명 이하) 혼복이 0판인 대진표는 피한다 — 여복만 돌면 늘 같은 사람끼리다.
+    score += G["mixed_below_min"] * max(0, state.get("mixed_min", 0) - n_mixed) ** 2
 
     # 비어버린 코트-슬롯
     feasible_court_slots = 0
