@@ -104,9 +104,18 @@ MIXED_MIN_GAMES = 1       # 최소 보장 판수
 MIXED_DEFAULT_QUOTA = 2   # 그때의 허용 상한 (= "1~2게임 정도")
 
 # 두 팀 구력합 차이가 이 값을 넘으면 '쓸 만한 대진'으로 치지 않는다.
-# 예: 방미라(3)+노남숙(3)=6  vs  서명숙(5)+정정희(5)=10 → 차이 4 → 재미없는 대진으로 본다.
+# 출전 4명이 모두 구력 10년 미만이면 3, 10년 이상인 사람이 끼면 4까지 허용한다.
+#   (고구력자가 끼면 합계 자체가 커서 딱 맞추기 어렵기 때문)
+# 예: 방미라(3)+노남숙(3)=6  vs  서명숙(5)+정정희(5)=10 → 차이 4 → 전원 10년 미만이므로 탈락.
 # 억지로 여복을 만들다 구력이 안 맞느니 다른 조합이나 혼복이 낫다는 판단.
-SINGLES_SKILL_TOL = 3
+HIGH_EXP = 10
+SKILL_TOL_LOW = 3      # 전원 구력 10년 미만
+SKILL_TOL_HIGH = 4     # 구력 10년 이상인 사람이 낀 대진
+
+
+def skill_tol(*people) -> int:
+    """이 대진에 적용할 두 팀 구력합 차이 허용치."""
+    return SKILL_TOL_HIGH if any(p["exp"] >= HIGH_EXP for p in people) else SKILL_TOL_LOW
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -329,8 +338,9 @@ def match_cost(
     exp_gap = abs(t1_exp - t2_exp)
     cost += W["team_skill_diff"] * exp_gap
     # 구력합 차이가 허용치를 넘으면 급증 — 억지로 짜서 재미없는 경기가 되느니 다른 조합/종류로.
-    if exp_gap > SINGLES_SKILL_TOL:
-        cost += W["skill_gap_over_tol"] * (exp_gap - SINGLES_SKILL_TOL) ** 2
+    tol = skill_tol(*all_players)
+    if exp_gap > tol:
+        cost += W["skill_gap_over_tol"] * (exp_gap - tol) ** 2
 
     for team in (team1, team2):
         k = pair_key(team[0]["id"], team[1]["id"])
@@ -589,7 +599,7 @@ def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: in
     """이 성별만으로 '쓸 만한' 단성 복식을 아직 만들 수 있는가.
 
     쓸 만하다 = ① 같은 짝이 처음이고 ② 같은 4명이 다시 만나는 것도 아니고
-              ③ 두 팀 구력합 차이가 SINGLES_SKILL_TOL 이내.
+              ③ 두 팀 구력합 차이가 허용치 이내(전원 10년 미만이면 3, 10년 이상 포함이면 4).
 
     False면 지금 단성 복식을 짜봐야 짝이 겹치거나, 같은 사람들끼리 또 붙거나,
     구력이 안 맞는 재미없는 경기가 된다는 뜻 → 혼복이 정당한 차선책이 된다.
@@ -609,7 +619,7 @@ def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: in
                 # 교류전: 같은 팀은 같은 클럽, 상대는 다른 클럽이어야 성립하는 조합만 본다.
                 if not _same_club(p1, p2) or not _same_club(p3, p4) or _same_club(p1, p3):
                     continue
-            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) > SINGLES_SKILL_TOL:
+            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) > skill_tol(p1, p2, p3, p4):
                 continue                            # 구력이 안 맞는 대진은 '쓸 만하다'로 안 본다
             t1 = (p1["id"], p2["id"])
             t2 = (p3["id"], p4["id"])
@@ -638,7 +648,7 @@ def good_singles_capacity(same_gender_players: list[dict], multi: bool = False) 
             p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
             if multi and (not _same_club(p1, p2) or not _same_club(p3, p4) or _same_club(p1, p3)):
                 continue
-            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) <= SINGLES_SKILL_TOL:
+            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) <= skill_tol(p1, p2, p3, p4):
                 count += 1
                 usable_pairs.add(pair_key(p1["id"], p2["id"]))
                 usable_pairs.add(pair_key(p3["id"], p4["id"]))
@@ -754,8 +764,9 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
     t2 = [players_by_id[i] for i in match["team2"]]
     exp_gap = abs((t1[0]["exp"] + t1[1]["exp"]) - (t2[0]["exp"] + t2[1]["exp"]))
     cost = G["team_skill_diff"] * exp_gap
-    if exp_gap > SINGLES_SKILL_TOL:
-        cost += G["skill_gap_over_tol"] * (exp_gap - SINGLES_SKILL_TOL) ** 2
+    tol = skill_tol(*t1, *t2)
+    if exp_gap > tol:
+        cost += G["skill_gap_over_tol"] * (exp_gap - tol) ** 2
 
     mtype = match["type"]
     if mtype == "X":
