@@ -17,6 +17,7 @@ import sys
 # ---------------------------------------------------------------------------
 W = dict(
     team_skill_diff=4.0,
+    skill_gap_over_tol=40.0,    # 두 팀 구력합 차이가 허용치 초과 (초과분)^2
     pair_repeat=20.0,
     consecutive=3.0,            # 2슬롯 연속은 '몰아서 하고 일찍 끝내기'에 유리 → 약하게만 억제
     three_consec=500.0,
@@ -31,7 +32,7 @@ W = dict(
     history_pair_repeat=30.0,   # 지난주/2주전과 같은 페어 회피(소프트). 우리멤버끼리(단일클럽)일 때만 적용, 교류전 제외.
                                 # 같은주 중복페어 유효비용(pair_repeat 20 → 첫 중복 40)보다 낮게 둔다:
                                 # 지난주 회피 때문에 이번 주 안에서 같은 짝을 반복하는 자기모순을 막기 위함.
-    quad_repeat=15.0,           # 같은 4명이 편만 바꿔 다시 만남 (약하게)
+    quad_repeat=95.0,           # 같은 4명이 편만 바꿔 다시 만남 — 이것도 확실히 회피
     matchup_repeat=90.0,        # 같은 4명이 '상대편까지 그대로' 다시 만남 (강하게)
     mixed_below_min=40.0,       # 최소 보장 판수를 못 채운 동안 혼복 우대 (음수 비용)
     single_mixed_nonpriority=70.0,
@@ -62,8 +63,8 @@ G = dict(
     # ↑ 여자가 4명뿐이면 여복은 '4명 통째'로만 늘어나므로, 개인 단위 균형만으로는
     #   "부족분 몫을 항상 여자 4명이 진다"가 비용상 동점이 되어 그대로 채택된다.
     #   성별 그룹 평균까지 보게 해서 그 쏠림을 깬다.
-    pair_dup=30.0,
-    quad_repeat=25.0,           # 같은 4명이 편만 바꿔 재대결
+    pair_dup=55.0,
+    quad_repeat=210.0,          # 같은 4명이 편만 바꿔 재대결 — 그럴 바엔 혼복이 낫다
     matchup_repeat=220.0,       # 같은 4명이 상대편까지 그대로 재대결 — 혼복 1~2판보다 나쁘다고 본다
     history_pair=30.0,
     three_streak=400.0,
@@ -76,12 +77,14 @@ G = dict(
     #   혼복이 막혀 여자 게임수가 깎이므로 낮게 둔다.
     women_doubles_bonus=100.0,  # 교류전: 여복 1경기당 보너스
     team_skill_diff=4.0,
+    skill_gap_over_tol=40.0,    # 두 팀 구력합 차이가 허용치 초과 (초과분)^2
     mixed_skill_violation=1000.0,
     court_affinity=10.0,
     female_early=200.0,
     member_guest=1.0,
     gap=4.0,                    # 경기 사이 공백 30분당
-    long_gap=150.0,             # 경기 사이 공백이 1시간 이상일 때 (초과 30분 단위)^2 — 최우선 회피
+    long_gap=200.0,             # 경기 사이 공백이 1시간 이상일 때 (초과 30분 단위)^2 — 최우선 회피
+    # ↑ 같은 4명 재대결(quad_repeat)보다 위. 한 사람이 1시간 노는 게 대진 한 판 겹치는 것보다 나쁘다.
     start_delay=5.0,            # 도착(IN) 후 첫 경기까지 대기 30분당
     long_start_delay=60.0,      # 첫 경기까지 1시간 넘게 기다릴 때 (초과 30분 단위)^2
     idle_sq=5.0,                # 개인별 총 유휴시간(대기+공백)의 볼록 페널티 — 한 사람에게 몰리는 것 방지
@@ -99,6 +102,10 @@ SPREAD_CAP = 2
 MIXED_SMALL_WOMEN = 6
 MIXED_MIN_GAMES = 1       # 최소 보장 판수
 MIXED_DEFAULT_QUOTA = 2   # 그때의 허용 상한 (= "1~2게임 정도")
+
+# 단성 복식(남복/여복)에서 두 팀 구력합 차이가 이 값을 넘으면 '쓸 만한 대진'으로 치지 않는다.
+# 억지로 여복을 만들다 구력이 안 맞는 재미없는 경기가 되느니 혼복이 낫다는 판단.
+SINGLES_SKILL_TOL = 4
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -211,16 +218,18 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
         return 0, 10 ** 6       # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
 
     quota = 0
-    if minority <= 5:
-        clean_singles_max = 3 if minority == 4 else 6   # 중복 없이 만들 수 있는 단성 복식 판수
-        total_matches = 0
-        for sl in (schedule_slots or []):
-            n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
-            total_matches += min(len(sl["courts"]), n_avail // 4)
-        if total_matches and n:
-            target = round(4 * total_matches / n)       # 1인당 공평 게임수
-            need = max(0, target - clean_singles_max)   # 단성 복식만으로 못 채우는 게임수
-            quota = -(-minority * need // 2)            # 혼복 1판이 소수 성별 2명을 태운다
+    minority_players = [p for p in players
+                        if p["gender"] == ("F" if n_f <= n_m else "M")]
+    # 짝도 안 겹치고 구력도 맞는 단성 복식을 몇 판까지 만들 수 있는지
+    capacity = good_singles_capacity(minority_players, multi)
+    total_matches = 0
+    for sl in (schedule_slots or []):
+        n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
+        total_matches += min(len(sl["courts"]), n_avail // 4)
+    if total_matches and n:
+        target = round(4 * total_matches / n)          # 1인당 공평 게임수
+        need = max(0, target - capacity)               # 단성 복식만으로 못 채우는 게임수
+        quota = -(-minority * need // 2)               # 혼복 1판이 소수 성별 2명을 태운다
 
     if n_f <= MIXED_SMALL_WOMEN:
         return MIXED_MIN_GAMES, max(quota, MIXED_DEFAULT_QUOTA)
@@ -315,7 +324,11 @@ def match_cost(
 
     t1_exp = team1[0]["exp"] + team1[1]["exp"]
     t2_exp = team2[0]["exp"] + team2[1]["exp"]
-    cost += W["team_skill_diff"] * abs(t1_exp - t2_exp)
+    exp_gap = abs(t1_exp - t2_exp)
+    cost += W["team_skill_diff"] * exp_gap
+    # 구력합 차이가 허용치를 넘으면 급증 — 억지로 짜서 재미없는 경기가 되느니 다른 조합/종류로.
+    if exp_gap > SINGLES_SKILL_TOL:
+        cost += W["skill_gap_over_tol"] * (exp_gap - SINGLES_SKILL_TOL) ** 2
 
     for team in (team1, team2):
         k = pair_key(team[0]["id"], team[1]["id"])
@@ -567,24 +580,35 @@ def enumerate_candidates(
     return candidates
 
 
-def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: int = 8) -> bool:
-    """이 성별만으로 '페어도 매치업도 처음인' 단성 복식을 만들 수 있는가.
+SPLITS_OF_4 = (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2)))
 
-    False면 그 성별은 지금 단성 복식을 짜봐야 같은 짝이나 같은 대결이 반복된다는 뜻 →
-    혼복이 정당한 차선책이 된다. (여자가 4명뿐이면 여복 3판 뒤 반드시 False가 된다)
+
+def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: int = 8) -> bool:
+    """이 성별만으로 '쓸 만한' 단성 복식을 아직 만들 수 있는가.
+
+    쓸 만하다 = ① 같은 짝이 처음이고 ② 같은 4명이 다시 만나는 것도 아니고
+              ③ 두 팀 구력합 차이가 SINGLES_SKILL_TOL 이내.
+
+    False면 지금 단성 복식을 짜봐야 짝이 겹치거나, 같은 사람들끼리 또 붙거나,
+    구력이 안 맞는 재미없는 경기가 된다는 뜻 → 혼복이 정당한 차선책이 된다.
+    (여자가 4명뿐이면 편 가르는 방법이 3가지뿐이라 금방 False가 된다)
     """
     people = same_gender_pool[:limit]
     if len(people) < 4:
         return False
-    pc, mc = state["pair_count"], state["matchup_count"]
+    pc, mc, qc = state["pair_count"], state["matchup_count"], state["quad_count"]
     multi = bool(state.get("multi_club"))
     for combo in itertools.combinations(people, 4):
-        for (i, j), (k, l) in (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2))):
+        if qc.get(quad_key((combo[0]["id"], combo[1]["id"]), (combo[2]["id"], combo[3]["id"]))):
+            continue                                # 이 4명은 이미 한 번 붙었다
+        for (i, j), (k, l) in SPLITS_OF_4:
             p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
             if multi:
                 # 교류전: 같은 팀은 같은 클럽, 상대는 다른 클럽이어야 성립하는 조합만 본다.
                 if not _same_club(p1, p2) or not _same_club(p3, p4) or _same_club(p1, p3):
                     continue
+            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) > SINGLES_SKILL_TOL:
+                continue                            # 구력이 안 맞는 대진은 '쓸 만하다'로 안 본다
             t1 = (p1["id"], p2["id"])
             t2 = (p3["id"], p4["id"])
             if pc.get(pair_key(*t1)) or pc.get(pair_key(*t2)):
@@ -593,6 +617,28 @@ def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: in
                 continue
             return True
     return False
+
+
+def good_singles_capacity(same_gender_players: list[dict], multi: bool = False) -> int:
+    """짝도 안 겹치고 구력도 맞는 단성 복식을 최대 몇 판까지 만들 수 있는가.
+
+    혼복 허용량을 정하는 근거. 예를 들어 여자가 4명이고 구력이 3/5/7/3이면
+    편 가르는 방법 3가지 중 (3+3 vs 5+7)은 구력합 6 차이라 쓸 수 없어 2판이 한계다.
+    → 나머지 게임수는 혼복으로 채워야 한다.
+    """
+    n = len(same_gender_players)
+    if n < 4:
+        return 0
+    count = 0
+    for combo in itertools.combinations(same_gender_players, 4):
+        for (i, j), (k, l) in SPLITS_OF_4:
+            p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
+            if multi and (not _same_club(p1, p2) or not _same_club(p3, p4) or _same_club(p1, p3)):
+                continue
+            if abs((p1["exp"] + p2["exp"]) - (p3["exp"] + p4["exp"])) <= SINGLES_SKILL_TOL:
+                count += 1
+    # 짝이 겹치지 않으려면 한 판에 페어 2개를 쓰므로 (가능한 페어 수 / 2)판이 상한
+    return min(count, n * (n - 1) // 2 // 2)
 
 
 def _hard_filter(
@@ -699,9 +745,10 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
     """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트)."""
     t1 = [players_by_id[i] for i in match["team1"]]
     t2 = [players_by_id[i] for i in match["team2"]]
-    cost = G["team_skill_diff"] * abs(
-        (t1[0]["exp"] + t1[1]["exp"]) - (t2[0]["exp"] + t2[1]["exp"])
-    )
+    exp_gap = abs((t1[0]["exp"] + t1[1]["exp"]) - (t2[0]["exp"] + t2[1]["exp"]))
+    cost = G["team_skill_diff"] * exp_gap
+    if exp_gap > SINGLES_SKILL_TOL:
+        cost += G["skill_gap_over_tol"] * (exp_gap - SINGLES_SKILL_TOL) ** 2
 
     mtype = match["type"]
     if mtype == "X":
