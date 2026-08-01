@@ -11,7 +11,6 @@ const seedEl = $("seed");
 const itersEl = $("iters");
 const titleEl = $("title");
 const runBtn = $("run");
-const tplEmptyBtn = $("tpl-empty");
 const tplPrefillBtn = $("tpl-prefill");
 const summaryEl = $("summary");
 
@@ -23,7 +22,6 @@ function log(msg) {
 
 function setBusy(busy, label = "대진표 생성") {
   runBtn.disabled = busy;
-  tplEmptyBtn.disabled = busy;
   tplPrefillBtn.disabled = busy;
   runBtn.textContent = busy ? "처리 중…" : label;
 }
@@ -107,14 +105,6 @@ function outputFileName(dateStr) {
 }
 
 dateEl.value = defaultDateStr();
-
-tplEmptyBtn.addEventListener("click", () => {
-  if (!workerReady) { log("아직 준비 중입니다."); return; }
-  pendingTemplateName = "테니스_입력양식.xlsx";
-  setBusy(true);
-  log("빈 양식 생성 요청…");
-  worker.postMessage({ type: "template", payload: { prefill: "" } });
-});
 
 tplPrefillBtn.addEventListener("click", () => {
   if (!workerReady) { log("아직 준비 중입니다."); return; }

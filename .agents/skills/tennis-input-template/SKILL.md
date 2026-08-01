@@ -50,7 +50,7 @@ python C:\Works\auto-tennis-bracket\.claude\skills\tennis-input-template\scripts
 python C:\Works\auto-tennis-bracket\.claude\skills\tennis-input-template\scripts\build_template.py --out C:\Works\auto-tennis-bracket\테니스_입력양식.xlsx --prefill image
 ```
 
-`--prefill image` 옵션: 첨부 이미지(`화면 캡처 2026-05-29 101052.png`)에서 명확히 추출 가능한 데이터만 사전 채움. 사용자는 빈 칸(성별, 미상 IN/OUT, 정/게, 미상 구력)을 수기 입력.
+`--prefill image` 옵션: **우리클럽 정회원 로스터**(`PREFILL_FROM_IMAGE`, 26.8.1 사용자 제공 입력양식 기준 18명 — 김효순 표기, 개인별 평소 IN/OUT·최대게임수 포함)를 사전 채움. 게스트는 매주 달라지므로 담지 않는다(사용자가 행 추가). 웹의 "사전채움 양식 다운로드" 버튼이 이 로스터를 쓴다(빈 양식 버튼은 26.8.1 제거).
 
 ### 채워진 입력 파싱
 ```powershell
