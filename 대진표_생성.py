@@ -157,7 +157,7 @@ def _resolve_prev(args, target_suffix: str) -> tuple[str | None, str | None]:
         if d2:
             print(f"[자동] 2주전 대진표: {d2.name}")
         if not (d1 or d2):
-            print("[자동] 출력 폴더에서 이전 대진표를 찾지 못했습니다 — 페어 회피 없이 진행합니다.")
+            print("[자동] 출력 폴더에서 이전 대진표를 찾지 못했습니다 - 페어 회피 없이 진행합니다.")
         return (str(d1) if d1 else None, str(d2) if d2 else None)
     if args.prompt_prev and sys.stdin.isatty():
         return _prompt_prev(target_suffix)
@@ -183,6 +183,65 @@ def cmd_create_template(args) -> int:
         print(f"     python 대진표_생성.py --date \"26.5.30\"")
         print(f"     (--in 생략 시 '{DEFAULT_INPUT.name}'을 자동으로 사용합니다)")
     return rc
+
+
+def cmd_check(args) -> int:
+    """입력 양식만 검사 (대진표 생성 안 함). 오류·경고와 구성 요약을 보여준다."""
+    inp = Path(args.inp) if args.inp else DEFAULT_INPUT
+    if not inp.exists():
+        print(f"[에러] 입력 파일을 찾을 수 없습니다: {inp}")
+        print(f"       먼저 'python 대진표_생성.py --create-template'로 양식을 만드세요.")
+        return 1
+
+    WORKSPACE.mkdir(exist_ok=True)
+    check_json = WORKSPACE / "00_check_parsed.json"
+    print("=" * 60)
+    print(f"입력 양식 검사: {inp}")
+    print("=" * 60)
+    rc = _run("입력 검사", [SCRIPTS["parse_input"], "--in", inp, "--out", check_json])
+    if rc != 0:
+        print("\n[결과] X 입력 양식에 오류가 있습니다.")
+        print("       위의 [에러] 메시지를 보고 해당 칸을 고친 뒤 다시 검사하세요.")
+        return rc
+
+    import json
+    data = json.loads(check_json.read_text(encoding="utf-8"))
+    players = data["players"]
+    slots = data["schedule_slots"]
+    warnings = data.get("warnings", [])
+
+    males = [p for p in players if p["gender"] == "M"]
+    females = [p for p in players if p["gender"] == "F"]
+    guests = [p for p in players if p["membership"] == "게스트"]
+    clubs = {p.get("club", "") for p in players if p.get("club", "")}
+
+    total_seats = 0
+    for sl in slots:
+        n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
+        total_seats += min(len(sl["courts"]), n_avail // 4) * 4
+
+    print()
+    print(f"  참가자 {len(players)}명 (남 {len(males)} / 여 {len(females)}, 게스트 {len(guests)}명)")
+    if len(clubs) > 1:
+        print(f"  교류전 모드: 클럽 {len(clubs)}개 ({', '.join(sorted(clubs))})")
+    print(f"  코트 {len(data['courts'])}개, 슬롯 {len(slots)}개 - 전체 배정 가능 자리 {total_seats}개")
+    avg = total_seats / len(players) if players else 0
+    print(f"  1인당 평균 예상 게임수: 약 {avg:.1f}게임")
+
+    min_list = [(p["name"], p["min_games"]) for p in players if p.get("min_games")]
+    max_list = [(p["name"], p["max_games"]) for p in players if p.get("max_games") is not None]
+    if min_list:
+        print(f"  최소게임수 지정 {len(min_list)}명: " + ", ".join(f"{n}={v}" for n, v in min_list))
+    if max_list:
+        print(f"  최대게임수 지정 {len(max_list)}명: " + ", ".join(f"{n}={v}" for n, v in max_list))
+
+    print()
+    if warnings:
+        print(f"[결과] O 형식 오류 없음 - 다만 경고 {len(warnings)}건을 확인하세요 (위 [경고] 참조).")
+    else:
+        print("[결과] O 입력 양식 이상 없음 - 이대로 대진표를 생성할 수 있습니다.")
+    print("       생성: python 대진표_생성.py --date \"26.5.30\"  (또는 대진표_생성.bat)")
+    return 0
 
 
 def cmd_generate(args) -> int:
@@ -218,7 +277,7 @@ def cmd_generate(args) -> int:
         if rc == 0 and HISTORY_JSON.exists():
             history_arg = ["--history", HISTORY_JSON]
         else:
-            print("[경고] 이전 대진표 히스토리 생성 실패 — 페어 회피 없이 진행합니다.")
+            print("[경고] 이전 대진표 히스토리 생성 실패 - 페어 회피 없이 진행합니다.")
 
     print("=" * 60)
     print(f"입력: {inp}")
@@ -284,7 +343,7 @@ def main():
     p.add_argument("--refine", type=int, default=6,
                    help="상위 N개 초안을 로컬 개선(공백/대기 줄이기)으로 다듬음")
     p.add_argument("--kicks", type=int, default=40,
-                   help="로컬 개선의 무작위 교란 횟수 — 크게 하면 품질↑ 시간↑")
+                   help="로컬 개선의 무작위 교란 횟수 - 크게 하면 품질↑ 시간↑")
     p.add_argument("--keep-prev", action="store_true",
                    help="기존 _workspace 보존 (_workspace_prev/로 이동)")
     p.add_argument("--prev1", help="1주전 대진표 엑셀 경로 (겹치는 페어 회피, 우선순위 높음)")
@@ -295,6 +354,8 @@ def main():
                    help="대화형으로 이전 대진표 반영 여부를 물음(자동 감지 + 확인). .bat 기본 흐름에서 사용")
     p.add_argument("--no-prev", action="store_true",
                    help="이전 대진표 페어 회피를 사용하지 않음(명시적으로 끔)")
+    p.add_argument("--check", action="store_true",
+                   help="대진표 생성 없이 입력 양식만 검사 (오류·경고·구성 요약)")
     p.add_argument("--create-template", action="store_true",
                    help="대진표 생성 대신 빈 입력 양식만 생성")
     p.add_argument("--prefill", default="", choices=["", "image"],
@@ -303,6 +364,9 @@ def main():
 
     if args.create_template:
         return cmd_create_template(args)
+
+    if args.check:
+        return cmd_check(args)
 
     return cmd_generate(args)
 
