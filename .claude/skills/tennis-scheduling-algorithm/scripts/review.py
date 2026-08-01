@@ -65,7 +65,8 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
 
     groups = defaultdict(list)
     for s in player_stats:
-        if s.get("max_games") is not None:
+        # 개인별 최대/최소 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 균형 비교에서 제외
+        if s.get("max_games") is not None or s.get("min_games"):
             continue
         key = (s.get("club", ""), s.get("gender"), s["available_slots"]) if is_exchange else s["available_slots"]
         groups[key].append(s)
@@ -99,6 +100,28 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                 "msg": f"{s['name']}: 최대게임수 {s['max_games']} 초과 — 실제 {s['games']}게임 배정됨 (알고리즘 버그)",
             })
     scores["max_games_violations"] = max_games_violations
+
+    # 최소게임수 보장 — 가용 슬롯 한도로 자른 값 기준. 미달이면 RETRY.
+    min_games_violations = []
+    for s in player_stats:
+        mg = s.get("min_games")
+        if not mg:
+            continue
+        eff = min(mg, s["available_slots"])
+        if s["games"] < eff:
+            min_games_violations.append(s["name"])
+            issues.append({
+                "severity": "high",
+                "code": "min_games_violation",
+                "msg": f"{s['name']}: 최소게임수 {mg} 미달 — 실제 {s['games']}게임 배정됨 (보장 {eff}게임)",
+            })
+        if mg > s["available_slots"]:
+            issues.append({
+                "severity": "low",
+                "code": "min_games_capped",
+                "msg": f"{s['name']}: 최소게임수 {mg} > 가용 슬롯 {s['available_slots']}개 — {eff}게임까지만 보장 (입력 구조상 한계)",
+            })
+    scores["min_games_violations"] = min_games_violations
 
     pair_count = defaultdict(int)
     for m in matches:
@@ -300,12 +323,26 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["match_count"] = total_matches
     scores["type_count"] = bracket.get("type_count", {})
 
+    # 남자 게스트 남복 우선 — 혼복에 들어간 남자 게스트 자리 수 (정보용, 소프트 선호).
+    # 여자 게스트는 혼복 가능이라 세지 않는다.
+    male_guest_mixed_seats = 0
+    for m in matches:
+        if m["type"] != "X":
+            continue
+        for pid in m["team1"] + m["team2"]:
+            p = players_by_id[pid]
+            if p.get("membership") == "게스트" and p.get("gender") == "M":
+                male_guest_mixed_seats += 1
+    scores["male_guest_mixed_seats"] = male_guest_mixed_seats
+
     males_total = sum(1 for p in parsed["players"] if p["gender"] == "M")
     females_total = sum(1 for p in parsed["players"] if p["gender"] == "F")
     gender_balanced = males_total >= 4 and females_total >= 4
 
     verdict = "PASS"
     if scores["max_games_violations"]:
+        verdict = "RETRY"
+    if scores["min_games_violations"]:
         verdict = "RETRY"
 
     if scores["cross_club_pairs"] > 0:
@@ -388,6 +425,10 @@ def print_report(review: dict) -> None:
     print(f"팀 구력차: 평균 {s['team_skill_avg']}, 최대 {s['team_skill_max']}")
     print(f"혼복 비율: {s['mixed_ratio']*100:.1f}%")
     print(f"혼복 규칙 위반: {s['mixed_skill_violations']}건")
+    if s.get("min_games_violations"):
+        print(f"최소게임수 미달: {', '.join(s['min_games_violations'])}")
+    if s.get("male_guest_mixed_seats"):
+        print(f"혼복에 들어간 남자 게스트: {s['male_guest_mixed_seats']}자리 (남자 게스트는 남복 우선 — 인원 사정상 일부 가능)")
     if s.get("is_exchange"):
         print(f"교류전: 클럽 {', '.join(s.get('clubs', []))}  |  클럽혼합 페어(위반) {s.get('cross_club_pairs', 0)}건, 같은클럽끼리 경기 {s.get('same_club_matches', 0)}건")
     print("-" * 60)

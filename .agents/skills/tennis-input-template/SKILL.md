@@ -19,8 +19,11 @@ description: 테니스 대진표 입력용 빈 엑셀 템플릿을 생성하고,
 | 성별 | "남" 또는 "여" | 남 | |
 | 구력 | 정수 (년) | 5 | 0 이상 |
 | 구분 | "정회원" 또는 "게스트" | 정회원 | |
+| 클럽 | 문자열 | (옵션) | 교류전 때만 입력, 비우면 '우리클럽' |
 | IN시간 | HH:MM | 08:00 | 30분 단위 |
 | OUT시간 | HH:MM | 12:00 | 30분 단위, IN보다 늦어야 함 |
+| 최소게임수 | 정수 | (옵션) | 적으면 그 이상 배정 보장(가용 슬롯 한도), 1 이상 |
+| 최대게임수 | 정수 | (옵션) | 적으면 그 이하로만 배정(hard), 1 이상 |
 | 메모 | 문자열 | (옵션) | 자유 기재 |
 
 ### 시트 2: `코트`
@@ -39,19 +42,19 @@ description: 테니스 대진표 입력용 빈 엑셀 템플릿을 생성하고,
 
 ### 빈 템플릿 생성
 ```powershell
-python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-input-template\scripts\build_template.py --out C:\Works\auto-tennis-bracket\테니스_입력양식.xlsx
+python C:\Works\auto-tennis-bracket\.claude\skills\tennis-input-template\scripts\build_template.py --out C:\Works\auto-tennis-bracket\테니스_입력양식.xlsx
 ```
 
 ### 첨부 이미지 기반 사전 채움
 ```powershell
-python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-input-template\scripts\build_template.py --out C:\Works\auto-tennis-bracket\테니스_입력양식.xlsx --prefill image
+python C:\Works\auto-tennis-bracket\.claude\skills\tennis-input-template\scripts\build_template.py --out C:\Works\auto-tennis-bracket\테니스_입력양식.xlsx --prefill image
 ```
 
 `--prefill image` 옵션: 첨부 이미지(`화면 캡처 2026-05-29 101052.png`)에서 명확히 추출 가능한 데이터만 사전 채움. 사용자는 빈 칸(성별, 미상 IN/OUT, 정/게, 미상 구력)을 수기 입력.
 
 ### 채워진 입력 파싱
 ```powershell
-python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-input-template\scripts\parse_input.py --in <input.xlsx> --out C:\Works\auto-tennis-bracket\_workspace\01_parsed.json
+python C:\Works\auto-tennis-bracket\.claude\skills\tennis-input-template\scripts\parse_input.py --in <input.xlsx> --out C:\Works\auto-tennis-bracket\_workspace\01_parsed.json
 ```
 
 파싱 결과 JSON 스키마는 `requirements-parser` 에이전트 정의 참조.
@@ -65,6 +68,7 @@ python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-input-template\scripts\
 - IN ≥ OUT
 - 성별이 "남"/"여" 아님
 - 구분이 "정회원"/"게스트" 아님
+- 최소게임수/최대게임수가 1 미만이거나 정수 아님, 최소게임수 > 최대게임수
 - 코트의 시작 ≥ 종료
 - 참가자 < 4명
 
@@ -72,6 +76,8 @@ python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-input-template\scripts\
 - 남자(여자) 4명 미만 → 단성 복식 불가 안내
 - 특정 시간대 가용 인원 4명 미만
 - 코트 운영 시간이 모든 참가자 IN 범위 밖
+- 최소게임수 > 본인 가용 슬롯수 (가용 슬롯 수까지만 보장)
+- 최소게임수 합계 > 전체 배정 가능 자리 (일부 보장 불가 가능)
 
 ## 셀 서식 (build_template.py 산출)
 - 헤더 행: 굵게 + 회색 배경 + 가운데 정렬

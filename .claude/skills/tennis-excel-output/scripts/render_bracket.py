@@ -248,6 +248,8 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
         name_cell.alignment = CENTER
         name_cell.border = BORDER
         info = f"{min_to_hhmm(p['in_min'])}~{min_to_hhmm(p['out_min'])}"
+        if p.get("min_games"):
+            info += f" / 최소 {p['min_games']}게임"
         if p.get("max_games") is not None:
             info += f" / 최대 {p['max_games']}게임"
         if is_exchange and p.get("club"):

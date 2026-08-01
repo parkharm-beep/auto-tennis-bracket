@@ -29,7 +29,7 @@ description: 완성된 대진표 JSON을 첨부된 수기 양식대로 엑셀 �
 ## 사용
 
 ```powershell
-python C:\Works\auto-tennis-bracket\.Codex\skills\tennis-excel-output\scripts\render_bracket.py `
+python C:\Works\auto-tennis-bracket\.claude\skills\tennis-excel-output\scripts\render_bracket.py `
   --parsed  C:\Works\auto-tennis-bracket\_workspace\01_parsed.json `
   --bracket C:\Works\auto-tennis-bracket\_workspace\02_bracket.json `
   --out     C:\Works\auto-tennis-bracket\테니스_대진표_20260530.xlsx `

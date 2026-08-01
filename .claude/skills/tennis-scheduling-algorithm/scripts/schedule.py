@@ -43,6 +43,12 @@ W = dict(
     idle_urgency=14.0,
     # ↑ 오래 쉰 사람을 먼저 투입(음수 비용). '1시간 이상 공백'을 만들기 전에 되돌리는 힘.
     #   쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 생기지 않는다.
+    min_games_deficit=35.0,     # 최소게임수 미달자를 먼저 투입 (부족 게임수 1당, 음수 비용)
+    min_games_critical=600.0,   # 남은 가용 슬롯이 부족분과 같으면 지금 무조건 태워야 함 (음수 비용)
+    guest_in_mixed=30.0,        # 남자 게스트는 혼복보다 남복 위주 — 혼복에 남자 게스트 1명당 페널티.
+                                # (여자 게스트는 혼복 가능 — 페널티 없음)
+                                # 혼복을 막는 게 아니라 '혼복 남자 자리를 정회원이 맡게' 미는 힘이므로
+                                # single_mixed_nonpriority(70)보다 낮게 둔다.
 )
 
 IDLE_URGENCY_CAP = 4.0          # 유휴 우선 보정 상한(30분 단위) — 2시간 이상은 더 커지지 않음
@@ -89,6 +95,8 @@ G = dict(
     long_start_delay=60.0,      # 첫 경기까지 1시간 넘게 기다릴 때 (초과 30분 단위)^2
     idle_sq=5.0,                # 개인별 총 유휴시간(대기+공백)의 볼록 페널티 — 한 사람에게 몰리는 것 방지
     missed=5000.0,
+    min_games_short=900.0,      # 최소게임수 미달 (부족분)^2 — 어기지 않는 규칙. balance_under(400)보다 위
+    guest_in_mixed=25.0,        # 혼복에 남자 게스트 1명당 — 혼복 남자 자리는 가급적 정회원이 (소프트)
     accept_tolerance=90.0,      # 교란 후 이 정도 나빠짐까지는 받아들여 탐색을 넓힌다(점점 0으로)
 )
 
@@ -116,6 +124,27 @@ SKILL_TOL_HIGH = 4     # 구력 10년 이상인 사람이 낀 대진
 def skill_tol(*people) -> int:
     """이 대진에 적용할 두 팀 구력합 차이 허용치."""
     return SKILL_TOL_HIGH if any(p["exp"] >= HIGH_EXP for p in people) else SKILL_TOL_LOW
+
+
+def eff_min_games(p: dict) -> int:
+    """이 사람에게 실제로 보장해야 하는 최소 게임수.
+
+    입력의 '최소게임수'를 본인 가용 슬롯 수(그 이상은 물리적으로 불가)로 자른 값.
+    최소게임수를 안 적었으면 0.
+    """
+    mg = p.get("min_games")
+    if not mg:
+        return 0
+    return min(mg, len(p.get("available_slots") or []))
+
+
+def min_games_critical(p: dict, slot_start: int, state: dict) -> bool:
+    """이 슬롯을 놓치면 최소게임수 보장이 깨지는 상태인가 (남은 가용 슬롯 ≤ 부족분)."""
+    deficit = eff_min_games(p) - state["player_games"][p["id"]]
+    if deficit <= 0:
+        return False
+    remaining = sum(1 for s in (p.get("available_slots") or []) if s >= slot_start)
+    return remaining <= deficit
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -409,6 +438,15 @@ def match_cost(
                 urgency *= 0.35
             cost -= urgency
 
+        # 최소게임수 미달자는 우대 투입. 남은 가용 슬롯이 부족분만큼밖에 없으면
+        # 이 슬롯을 놓치는 순간 보장이 깨지므로 사실상 강제로 태운다.
+        deficit = eff_min_games(p) - played
+        if deficit > 0:
+            cost -= W["min_games_deficit"] * deficit
+            remaining = sum(1 for s in (p.get("available_slots") or []) if s >= slot_start)
+            if remaining <= deficit:
+                cost -= W["min_games_critical"]
+
     if match_type == "F" and state.get("multi_club"):
         # 교류전: 여복(여자복식)을 최우선 — 양 클럽에 여자 2명 이상이면 혼복보다 여복.
         # 구력 균형보다 앞서도록 큰 우대(음수 비용).
@@ -430,6 +468,10 @@ def match_cost(
         # 교류전: 단성 복식(남복/여복) 우선 — 여기서도 '중복 없는 단성 복식'이 더 없으면 혼복 허용.
         if state.get("multi_club") and not mixed_is_fallback:
             cost += W["mixed_nonpriority"]
+        # 남자 게스트는 혼복보다 남복 위주 — 혼복 남자 자리는 가급적 정회원이 맡는다.
+        # (여자 게스트는 혼복 가능)
+        cost += W["guest_in_mixed"] * sum(
+            1 for p in all_players if p["gender"] == "M" and p["membership"] == "게스트")
         for team in (team1, team2):
             male = team[0] if team[0]["gender"] == "M" else team[1]
             female = team[1] if team[0]["gender"] == "M" else team[0]
@@ -462,7 +504,10 @@ def enumerate_candidates(
     court_name: str = "",
 ) -> list[tuple[float, str, tuple, tuple]]:
     # 3연속 위험자 분리. 풀이 충분하면 안전 풀만 사용.
-    safe_pool = [p for p in pool if not is_three_streak(p["id"], slot_start, state)]
+    # (최소게임수 보장이 위태로운 사람은 3연속이라도 안전 풀에 남긴다)
+    safe_pool = [p for p in pool
+                 if not is_three_streak(p["id"], slot_start, state)
+                 or min_games_critical(p, slot_start, state)]
     if len(safe_pool) >= 4:
         working_pool = safe_pool
     else:
@@ -476,10 +521,12 @@ def enumerate_candidates(
         ref = (max(slots) + 30) if slots else eff_in.get(p["id"], slot_start)
         return slot_start - ref
 
-    # 게임수가 적은 사람 → 오래 쉰 사람 순. 공백이 커지기 전에 후보에 들어오게 한다.
+    # 최소게임수 미달자 → 게임수가 적은 사람 → 오래 쉰 사람 순.
+    # 미달자가 top_k 밖으로 밀려 후보에조차 못 드는 일을 막는다.
     pool_sorted = sorted(
         working_pool,
         key=lambda p: (
+            -max(0, eff_min_games(p) - state["player_games"][p["id"]]),
             state["player_games"][p["id"]],
             -min(_pending(p), 120),
             1 if is_two_streak(p["id"], slot_start, state) else 0,
@@ -664,13 +711,22 @@ def _hard_filter(
     state: dict,
     pool_size: int,
 ) -> list[tuple]:
+    def _streak_blocked(p):
+        """3연속 출전으로 걸러야 하는 선수인가.
+
+        단, 최소게임수 보장이 위태로운 사람은 예외 — 지금 안 태우면 보장이
+        깨지므로 3연속이라도 태운다.
+        """
+        return (is_three_streak(p["id"], slot_start, state)
+                and not min_games_critical(p, slot_start, state))
+
     filtered = []
     for entry in cands:
         cost, mtype, t1, t2 = entry
         all_players = list(t1) + list(t2)
 
         if pool_size >= 8:
-            if any(is_three_streak(p["id"], slot_start, state) for p in all_players):
+            if any(_streak_blocked(p) for p in all_players):
                 continue
 
         filtered.append(entry)
@@ -775,6 +831,10 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
             female = team[1] if team[0]["gender"] == "M" else team[0]
             if male["exp"] < female["exp"]:
                 cost += G["mixed_skill_violation"]
+        # 남자 게스트는 혼복보다 남복 위주 — 로컬 개선(선수 교환)이 혼복에서 빼내게 한다.
+        # (여자 게스트는 혼복 가능)
+        cost += G["guest_in_mixed"] * sum(
+            1 for p in t1 + t2 if p["gender"] == "M" and p["membership"] == "게스트")
         # 혼복 자체의 개수 페널티는 허용량(mixed_quota)과 함께 봐야 하므로 full_score에서 계산한다.
     elif mtype == "F" and multi_club:
         cost -= G["women_doubles_bonus"]
@@ -912,6 +972,12 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
     score += G["mixed_over_quota"] * max(0, n_mixed - quota) ** 2
     # 여자가 적으면(6명 이하) 혼복이 0판인 대진표는 피한다 — 여복만 돌면 늘 같은 사람끼리다.
     score += G["mixed_below_min"] * max(0, state.get("mixed_min", 0) - n_mixed) ** 2
+
+    # 개인별 최소게임수 보장 — 어기지 않는 규칙. 미달인 초안은 사실상 선택되지 않는다.
+    for p in players:
+        short = eff_min_games(p) - state["player_games"][p["id"]]
+        if short > 0:
+            score += G["min_games_short"] * short * short
 
     # 비어버린 코트-슬롯
     feasible_court_slots = 0
@@ -1390,6 +1456,7 @@ def solve(
             "in_min": p["in_min"],
             "out_min": p["out_min"],
             "max_games": p.get("max_games"),
+            "min_games": p.get("min_games"),
             # 시간표 품질 지표
             "eff_in": e_in,
             "start_delay": (slots[0] - e_in) if slots else 0,

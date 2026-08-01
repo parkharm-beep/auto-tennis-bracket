@@ -90,6 +90,19 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
                         raise ValueError(f"'{name}': 최대게임수는 정수여야 합니다 (현재: '{raw}')")
                     if max_games < 1:
                         raise ValueError(f"'{name}': 최대게임수는 1 이상이어야 합니다")
+
+            min_games = None
+            if "최소게임수" in col_idx:
+                raw = row[col_idx["최소게임수"]]
+                if raw not in (None, ""):
+                    try:
+                        min_games = int(raw)
+                    except (ValueError, TypeError):
+                        raise ValueError(f"'{name}': 최소게임수는 정수여야 합니다 (현재: '{raw}')")
+                    if min_games < 1:
+                        raise ValueError(f"'{name}': 최소게임수는 1 이상이어야 합니다")
+            if min_games is not None and max_games is not None and min_games > max_games:
+                raise ValueError(f"'{name}': 최소게임수({min_games})가 최대게임수({max_games})보다 큽니다")
         except (ValueError, TypeError) as e:
             errors.append(str(e))
             continue
@@ -104,6 +117,7 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             "in_min": in_min,
             "out_min": out_min,
             "max_games": max_games,
+            "min_games": min_games,
         })
         pid += 1
 
@@ -248,6 +262,17 @@ def main():
             warnings.append(f"'{p['name']}': 가용 슬롯 없음 — 코트 운영 시간과 IN/OUT 범위 확인 필요")
         if p["max_games"] is not None and p["max_games"] > len(p["available_slots"]):
             warnings.append(f"'{p['name']}': 최대게임수({p['max_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 한도로 자연 제한됨")
+        if p.get("min_games") and p["min_games"] > len(p["available_slots"]):
+            warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 수까지만 보장됨")
+
+    # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
+    total_seats = 0
+    for sl in schedule_slots:
+        n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
+        total_seats += min(len(sl["courts"]), n_avail // 4) * 4
+    min_sum = sum(min(p["min_games"], len(p["available_slots"])) for p in players if p.get("min_games"))
+    if min_sum > total_seats:
+        warnings.append(f"최소게임수 합계({min_sum})가 전체 배정 가능 자리({total_seats})를 넘습니다 — 일부는 보장 못 할 수 있음")
 
     if warnings:
         for w in warnings:
