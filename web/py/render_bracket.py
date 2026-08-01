@@ -46,6 +46,174 @@ def min_to_hhmm(v: int) -> str:
     return f"{v // 60:02d}:{v % 60:02d}"
 
 
+FONT_STAT = Font(name="맑은 고딕", size=10)
+FONT_STAT_WARN = Font(name="맑은 고딕", size=10, bold=True, color="C00000")
+
+
+def _collect_person_stats(player_stats: list[dict], matches: list[dict]) -> dict:
+    """통계 시트용 사람별 지표 계산 (생성 시점의 bracket 기준).
+
+    최대 연속 게임수 / 최대 연속 휴식(경기 사이 최장 공백) / 1시간+ 공백 횟수 /
+    총 대기시간 / 복식 종류별 게임수 / 파트너 수·같은 짝 반복.
+    """
+    type_cnt = {s["id"]: {"M": 0, "F": 0, "X": 0} for s in player_stats}
+    partners = {s["id"]: defaultdict(int) for s in player_stats}
+    for m in matches:
+        for team in (m["team1"], m["team2"]):
+            a, b = team
+            type_cnt[a][m["type"]] += 1
+            type_cnt[b][m["type"]] += 1
+            partners[a][b] += 1
+            partners[b][a] += 1
+
+    out = {}
+    for s in player_stats:
+        pid = s["id"]
+        slots = sorted(s["slots_played"])
+        gaps = [slots[i] - slots[i - 1] - 30 for i in range(1, len(slots))]
+        best = run = 0
+        prev = None
+        for sl in slots:
+            run = run + 1 if (prev is not None and sl - prev == 30) else 1
+            best = max(best, run)
+            prev = sl
+        start_delay = s.get("start_delay")
+        if start_delay is None:
+            start_delay = max(0, slots[0] - s.get("eff_in", s["in_min"])) if slots else 0
+        pd = partners[pid]
+        out[pid] = dict(
+            slots=slots,
+            max_streak=best,
+            max_rest=max((g for g in gaps if g > 0), default=0),
+            long_gaps=sum(1 for g in gaps if g >= 60),
+            start_delay=start_delay,
+            total_idle=start_delay + sum(g for g in gaps if g > 0),
+            types=type_cnt[pid],
+            partner_n=len(pd),
+            partner_rep=sum(c - 1 for c in pd.values() if c > 1),
+        )
+    return out
+
+
+def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list) -> None:
+    """'통계' 시트: 사람별 통계 테이블 + 전체 요약."""
+    matches = bracket["matches"]
+    player_stats = bracket["player_stats"]
+    per = _collect_person_stats(player_stats, matches)
+
+    ws = wb.create_sheet("통계")
+
+    cols = [("번호", 5), ("이름", 12)]
+    if is_exchange:
+        cols.append(("클럽", 11))
+    cols += [
+        ("성별", 5), ("구력", 5), ("참석", 12),
+        ("게임수", 7), ("남복", 6), ("여복", 6), ("혼복", 6),
+        ("첫 경기", 8), ("마지막 경기", 10),
+        ("첫 대기(분)", 10), ("최대 연속 게임", 9), ("최대 연속 휴식(분)", 10),
+        ("1시간+ 공백(회)", 9), ("총 대기(분)", 10),
+        ("파트너 수", 8), ("같은 짝 반복", 8),
+    ]
+    for i, (_, w) in enumerate(cols, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.cell(row=1, column=1, value="사람별 통계 — 생성 시점 기준 (대진표 시트를 손으로 고쳐도 자동 갱신되지 않음)")
+    ws.cell(row=1, column=1).font = FONT_SMALL
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
+
+    HEADER_ROW = 2
+    for i, (title, _) in enumerate(cols, start=1):
+        c = ws.cell(row=HEADER_ROW, column=i, value=title)
+        c.font = FONT_HEADER
+        c.fill = HEADER_FILL
+        c.alignment = CENTER
+        c.border = BORDER
+    ws.row_dimensions[HEADER_ROW].height = 28
+
+    # 정렬: 명단 패널과 동일(가용 슬롯 많은 순). 교류전이면 클럽별로 묶는다.
+    if is_exchange:
+        ordered = []
+        for cname in clubs_ordered:
+            ordered += sorted([s for s in player_stats if s.get("club", "") == cname],
+                              key=lambda s: -s["available_slots"])
+        ordered += sorted([s for s in player_stats if s.get("club", "") not in clubs_ordered],
+                          key=lambda s: -s["available_slots"])
+    else:
+        ordered = sorted(player_stats, key=lambda s: -s["available_slots"])
+
+    for idx, s in enumerate(ordered):
+        p = per[s["id"]]
+        played = bool(p["slots"])
+        row_vals = [idx + 1, display_name(s)]
+        if is_exchange:
+            row_vals.append(s.get("club", ""))
+        row_vals += [
+            "남" if s["gender"] == "M" else "여",
+            s["exp"],
+            f"{min_to_hhmm(s['in_min'])}~{min_to_hhmm(s['out_min'])}",
+            s["games"],
+            p["types"]["M"], p["types"]["F"], p["types"]["X"],
+            min_to_hhmm(p["slots"][0]) if played else "-",
+            min_to_hhmm(p["slots"][-1] + 30) if played else "-",
+            p["start_delay"] if played else "-",
+            p["max_streak"],
+            p["max_rest"] if len(p["slots"]) >= 2 else "-",
+            p["long_gaps"],
+            p["total_idle"] if played else "-",
+            p["partner_n"],
+            p["partner_rep"],
+        ]
+        r = HEADER_ROW + 1 + idx
+        for ci, v in enumerate(row_vals, start=1):
+            cell = ws.cell(row=r, column=ci, value=v)
+            cell.font = FONT_STAT
+            cell.alignment = CENTER
+            cell.border = BORDER
+        # 눈에 띄어야 하는 값: 1시간 이상 휴식 / 1시간+ 공백 발생
+        off = 1 if is_exchange else 0
+        if isinstance(row_vals[13 + off], int) and row_vals[13 + off] >= 60:
+            ws.cell(row=r, column=14 + off).font = FONT_STAT_WARN
+        if row_vals[14 + off]:
+            ws.cell(row=r, column=15 + off).font = FONT_STAT_WARN
+        if s["membership"] == "게스트":
+            ws.cell(row=r, column=2).font = Font(name="맑은 고딕", size=10, italic=True)
+
+    ws.freeze_panes = f"A{HEADER_ROW + 1}"
+
+    # ── 전체 요약 ──
+    base = HEADER_ROW + len(ordered) + 2
+    games = [s["games"] for s in player_stats]
+    total_idle_all = sum(per[s["id"]]["total_idle"] for s in player_stats if per[s["id"]]["slots"])
+    long_gap_total = sum(per[s["id"]]["long_gaps"] for s in player_stats)
+    long_gap_people = sum(1 for s in player_stats if per[s["id"]]["long_gaps"])
+    finish_all = max((per[s["id"]]["slots"][-1] + 30 for s in player_stats if per[s["id"]]["slots"]),
+                     default=None)
+    tc = bracket.get("type_count", {})
+    rows = [
+        ("전체 요약", ""),
+        ("총 매치 수", f"{len(matches)}  (남복 {tc.get('M', 0)} · 여복 {tc.get('F', 0)} · 혼복 {tc.get('X', 0)})"),
+        ("참가자 수", len(player_stats)),
+        ("게임수 평균 / 최대 / 최소",
+         f"{round(sum(games) / max(1, len(games)), 2)} / {max(games, default=0)} / {min(games, default=0)}"),
+        ("1시간 이상 공백", f"{long_gap_total}건 / {long_gap_people}명"),
+        ("총 대기시간 합계", f"{total_idle_all}분"),
+        ("마지막 경기 종료", min_to_hhmm(finish_all) if finish_all else "-"),
+    ]
+    if is_exchange:
+        club_counts = defaultdict(int)
+        for s in player_stats:
+            club_counts[s.get("club", "")] += 1
+        rows.append(("교류전 클럽", "  ·  ".join(f"{c} {club_counts[c]}명" for c in clubs_ordered)))
+    for i, (k, v) in enumerate(rows):
+        kc = ws.cell(row=base + i, column=1, value=k)
+        kc.font = FONT_HEADER
+        ws.merge_cells(start_row=base + i, start_column=1, end_row=base + i, end_column=3)
+        vc = ws.cell(row=base + i, column=4, value=v)
+        vc.font = FONT_STAT
+        vc.alignment = Alignment(horizontal="left", vertical="center")
+        ws.merge_cells(start_row=base + i, start_column=4, end_row=base + i, end_column=len(cols))
+
+
 def display_name(p_stat: dict) -> str:
     n = p_stat["name"]
     if p_stat["membership"] == "게스트":
@@ -307,32 +475,8 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
     ws.print_options.horizontalCentered = True
     ws.page_setup.orientation = "landscape"
 
-    # 두 번째 시트: 통계 요약
-    ws2 = wb.create_sheet("통계")
-    ws2.column_dimensions["A"].width = 22
-    ws2.column_dimensions["B"].width = 18
-    rows = [
-        ("총 매치 수", len(matches)),
-        ("남자복식", bracket["type_count"].get("M", 0)),
-        ("여자복식", bracket["type_count"].get("F", 0)),
-        ("혼합복식", bracket["type_count"].get("X", 0)),
-        ("", ""),
-        ("참가자 수", len(player_stats)),
-        ("게임수 평균", round(sum(p["games"] for p in player_stats) / max(1, len(player_stats)), 2)),
-        ("게임수 최대", max((p["games"] for p in player_stats), default=0)),
-        ("게임수 최소", min((p["games"] for p in player_stats), default=0)),
-    ]
-    if is_exchange:
-        rows.append(("", ""))
-        rows.append(("교류전 클럽 수", len(clubs_present)))
-        club_counts = defaultdict(int)
-        for s in player_stats:
-            club_counts[s.get("club", "")] += 1
-        for cname in sorted(clubs_present):
-            rows.append((f"  · {cname}", f"{club_counts[cname]}명"))
-    for i, (k, v) in enumerate(rows, start=1):
-        ws2.cell(row=i, column=1, value=k).font = FONT_HEADER
-        ws2.cell(row=i, column=2, value=v).font = FONT_NAME
+    # 두 번째 시트: 사람별 통계 + 전체 요약
+    _build_stats_sheet(wb, bracket, is_exchange, clubs_ordered)
 
     wb.save(out_path)
 
