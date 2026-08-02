@@ -288,6 +288,60 @@ def _build_guide_sheet(ws):
             cell.fill = GUIDE_FILL
 
 
+def build_member_settings(out_path) -> None:
+    """멤버 설정 엑셀 생성: '멤버'(카톡아이디↔실제이름) + '부부'(부부 페어와 혼복 페어 희망).
+
+    웹 '멤버 설정 다운로드' 버튼과 CLI --create-members가 사용.
+    수정해서 웹에 업로드하거나 입력/클럽멤버_설정.xlsx 로 두면 대진 생성에 반영된다.
+    """
+    from parse_input import MEMBERS_DEFAULT, COUPLES_DEFAULT
+
+    wb = Workbook()
+
+    ws = wb.active
+    ws.title = "멤버"
+    for col_idx, (title, w) in enumerate([("번호", 6), ("카톡아이디", 18), ("실제이름", 14)], start=1):
+        cell = ws.cell(row=1, column=col_idx, value=title)
+        _style_header(cell)
+        ws.column_dimensions[get_column_letter(col_idx)].width = w
+    for i, (kid, real) in enumerate(MEMBERS_DEFAULT, 1):
+        for c, v in ((1, i), (2, kid), (3, real)):
+            cell = ws.cell(row=i + 1, column=c, value=v)
+            _style_body(cell)
+    ws.freeze_panes = "A2"
+
+    ws2 = wb.create_sheet("부부")
+    for col_idx, (title, w) in enumerate([("이름1", 14), ("이름2", 14), ("부부페어", 12), ("메모", 30)], start=1):
+        cell = ws2.cell(row=1, column=col_idx, value=title)
+        _style_header(cell)
+        ws2.column_dimensions[get_column_letter(col_idx)].width = w
+    for i, (a, b, want) in enumerate(COUPLES_DEFAULT, 2):
+        vals = (a, b, "원함" if want else "피함", "")
+        for c, v in enumerate(vals, 1):
+            cell = ws2.cell(row=i, column=c, value=v)
+            _style_body(cell)
+    # 추가 기입용 빈 행
+    for r in range(len(COUPLES_DEFAULT) + 2, len(COUPLES_DEFAULT) + 8):
+        for c in range(1, 5):
+            _style_body(ws2.cell(row=r, column=c))
+    dv = DataValidation(type="list", formula1='"원함,피함"', allow_blank=True)
+    dv.add(f"C2:C{len(COUPLES_DEFAULT) + 7}")
+    ws2.add_data_validation(dv)
+    note_row = len(COUPLES_DEFAULT) + 9
+    notes = [
+        "■ 부부페어: '원함' = 혼복이 나올 때 부부가 같은 팀이 되게 우대 / '피함' = 같은 팀이 안 되게 회피",
+        "■ 이름은 입력 양식의 참가자 이름(실제이름)과 똑같이 적어야 반영됩니다",
+        "■ 부부는 함께 오는 것으로 보고, 두 사람이 같이 끝나거나 30분 안쪽 차이로 끝나게 배정을 시도합니다",
+        "■ 이 파일을 웹의 '멤버 설정' 칸에 올리거나, 입력/클럽멤버_설정.xlsx 로 두면 반영됩니다 (없으면 내장 기본값)",
+    ]
+    for i, t in enumerate(notes):
+        c = ws2.cell(row=note_row + i, column=1, value=t)
+        c.font = Font(name="맑은 고딕", size=10, color="666666")
+        c.alignment = LEFT
+
+    wb.save(out_path)
+
+
 def build_template(out_path: str, prefill: str = "") -> None:
     wb = Workbook()
     ws_players = wb.active
@@ -310,7 +364,13 @@ def main():
     p.add_argument("--out", required=True, help="출력 .xlsx 경로")
     p.add_argument("--prefill", default="", choices=["", "image"],
                    help="image: 우리클럽 멤버 명단으로 사전 채움")
+    p.add_argument("--member-settings", action="store_true",
+                   help="입력 템플릿 대신 멤버 설정 파일(멤버·부부 시트)을 생성")
     args = p.parse_args()
+    if args.member_settings:
+        build_member_settings(args.out)
+        print(f"[OK] 멤버 설정 파일 생성: {args.out}  (멤버 25명 + 부부 페어 시트)")
+        return
     build_template(args.out, prefill=args.prefill)
     msg = f"[OK] 입력 템플릿 생성: {args.out}"
     if args.prefill == "image":

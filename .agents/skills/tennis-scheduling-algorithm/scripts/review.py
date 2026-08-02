@@ -323,6 +323,48 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["match_count"] = total_matches
     scores["type_count"] = bracket.get("type_count", {})
 
+    # 부부 페어: '피함' 부부 혼복 같은팀 / 종료시각 30분 초과 차이 (둘 다 소프트 — 정보용)
+    couples = parsed.get("couples") or []
+    name_to_id = {p["name"]: p["id"] for p in parsed["players"]}
+    stats_by_id = {s["id"]: s for s in player_stats}
+    couple_avoid_paired, couple_want_paired, couple_finish_over = [], [], []
+    team_pairs = set()
+    for m in matches:
+        if m["type"] != "X":
+            continue
+        for team in (m["team1"], m["team2"]):
+            team_pairs.add(pair_key(team[0], team[1]))
+    for entry in couples:
+        if not entry or len(entry) < 2:
+            continue
+        a, b = str(entry[0]), str(entry[1])
+        want = bool(entry[2]) if len(entry) > 2 else False
+        ida, idb = name_to_id.get(a), name_to_id.get(b)
+        if not (ida and idb):
+            continue
+        if pair_key(ida, idb) in team_pairs:
+            (couple_want_paired if want else couple_avoid_paired).append(f"{a}+{b}")
+            if not want:
+                issues.append({
+                    "severity": "medium",
+                    "code": "couple_pair_avoid_failed",
+                    "msg": f"부부 페어 회피 실패: {a}+{b} 혼복 같은 팀 (설정: 피함 — 인원 사정상 불가피할 수 있음)",
+                })
+        sa = sorted(stats_by_id[ida]["slots_played"])
+        sb = sorted(stats_by_id[idb]["slots_played"])
+        if sa and sb:
+            diff = abs(sa[-1] - sb[-1])
+            if diff > 30:
+                couple_finish_over.append(f"{a}+{b}({diff}분)")
+                issues.append({
+                    "severity": "low",
+                    "code": "couple_finish_gap",
+                    "msg": f"부부 종료시각 차이: {a} {min_to_hhmm(sa[-1]+30)} / {b} {min_to_hhmm(sb[-1]+30)} 종료 — {diff}분 차이 (목표 30분 이내)",
+                })
+    scores["couple_avoid_paired"] = couple_avoid_paired
+    scores["couple_want_paired"] = couple_want_paired
+    scores["couple_finish_over30"] = couple_finish_over
+
     # 남자 게스트 남복 우선 — 혼복에 들어간 남자 게스트 자리 수 (정보용, 소프트 선호).
     # 여자 게스트는 혼복 가능이라 세지 않는다.
     male_guest_mixed_seats = 0
@@ -429,6 +471,12 @@ def print_report(review: dict) -> None:
         print(f"최소게임수 미달: {', '.join(s['min_games_violations'])}")
     if s.get("male_guest_mixed_seats"):
         print(f"혼복에 들어간 남자 게스트: {s['male_guest_mixed_seats']}자리 (남자 게스트는 남복 우선 — 인원 사정상 일부 가능)")
+    if s.get("couple_avoid_paired"):
+        print(f"부부 페어 회피 실패(피함): {', '.join(s['couple_avoid_paired'])}")
+    if s.get("couple_want_paired"):
+        print(f"부부 페어 성사(원함): {', '.join(s['couple_want_paired'])}")
+    if s.get("couple_finish_over30"):
+        print(f"부부 종료시각 30분 초과: {', '.join(s['couple_finish_over30'])}")
     if s.get("is_exchange"):
         print(f"교류전: 클럽 {', '.join(s.get('clubs', []))}  |  클럽혼합 페어(위반) {s.get('cross_club_pairs', 0)}건, 같은클럽끼리 경기 {s.get('same_club_matches', 0)}건")
     print("-" * 60)

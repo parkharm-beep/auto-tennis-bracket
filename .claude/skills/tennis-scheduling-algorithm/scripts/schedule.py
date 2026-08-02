@@ -45,6 +45,8 @@ W = dict(
     #   쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 생기지 않는다.
     min_games_deficit=35.0,     # 최소게임수 미달자를 먼저 투입 (부족 게임수 1당, 음수 비용)
     min_games_critical=600.0,   # 남은 가용 슬롯이 부족분과 같으면 지금 무조건 태워야 함 (음수 비용)
+    couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 — 강하게 회피 (인원상 불가피하면 양보)
+    couple_want_pair=40.0,      # '원함' 부부가 혼복 같은 팀 — 우대 (음수 비용). 혼복 자체를 늘리진 않게 약하게
     guest_in_mixed=30.0,        # 남자 게스트는 혼복보다 남복 위주 — 혼복에 남자 게스트 1명당 페널티.
                                 # (여자 게스트는 혼복 가능 — 페널티 없음)
                                 # 혼복을 막는 게 아니라 '혼복 남자 자리를 정회원이 맡게' 미는 힘이므로
@@ -97,6 +99,11 @@ G = dict(
     missed=5000.0,
     min_games_short=900.0,      # 최소게임수 미달 (부족분)^2 — 어기지 않는 규칙. balance_under(400)보다 위
     guest_in_mixed=25.0,        # 혼복에 남자 게스트 1명당 — 혼복 남자 자리는 가급적 정회원이 (소프트)
+    couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 (경기당)
+    couple_want_pair=30.0,      # '원함' 부부가 혼복 같은 팀 (경기당 보너스, 음수)
+    couple_finish_gap=120.0,    # 부부 마지막 경기 종료 차이가 30분을 넘으면 (초과 30분 단위)^2
+                                # 부부는 같이 오가므로 같이 끝나거나 30분 안쪽 차이가 목표 (소프트).
+                                # 실측(21명 샘플): 70이면 60분 차가 남고, 200은 공백이 늘어남 — 120이 균형점.
     accept_tolerance=90.0,      # 교란 후 이 정도 나빠짐까지는 받아들여 탐색을 넓힌다(점점 0으로)
 )
 
@@ -276,7 +283,34 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
     return 0, quota
 
 
-def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dict:
+def build_couples(players: list[dict], couples) -> tuple[dict, list]:
+    """이름 기준 부부 목록([[이름1, 이름2, want], ...]) → 이번 주 id 기준 매핑.
+
+    둘 다 이번 주 참가자일 때만 반영. 반환: (pair_key→want, [(ida, idb, want), ...])
+    """
+    name_to_id = {p["name"]: p["id"] for p in players}
+    pref, lst = {}, []
+    for entry in couples or []:
+        if not entry or len(entry) < 2:
+            continue
+        a, b = str(entry[0]), str(entry[1])
+        want = bool(entry[2]) if len(entry) > 2 else False
+        ida, idb = name_to_id.get(a), name_to_id.get(b)
+        if ida and idb and ida != idb:
+            pref[pair_key(ida, idb)] = want
+            lst.append((ida, idb, want))
+    return pref, lst
+
+
+def couple_finish_cost(last_a, last_b) -> float:
+    """부부 두 사람의 마지막 경기 슬롯 차이 비용. 30분 이내는 0, 그 이상은 제곱 페널티."""
+    if last_a is None or last_b is None:
+        return 0.0
+    u = abs(last_a - last_b) / 30.0 - 1.0
+    return G["couple_finish_gap"] * u * u if u > 0 else 0.0
+
+
+def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couples=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
 
@@ -292,7 +326,11 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None) -> dic
     for p in players:
         bal_members.setdefault(bkey(p), []).append(p["id"])
     mixed_min, mixed_max = mixed_limits(players, schedule_slots, multi)
+    couple_pref, couple_list = build_couples(players, couples)
     return {
+        # 부부 페어: 혼복 같은 팀 회피(피함)/우대(원함) + 종료 시각 맞추기용
+        "couple_pref": couple_pref,
+        "couples": couple_list,
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
@@ -472,6 +510,13 @@ def match_cost(
         # (여자 게스트는 혼복 가능)
         cost += W["guest_in_mixed"] * sum(
             1 for p in all_players if p["gender"] == "M" and p["membership"] == "게스트")
+        # 부부 페어: '피함' 부부는 같은 팀 회피, '원함' 부부는 우대
+        cpref = state.get("couple_pref")
+        if cpref:
+            for team in (team1, team2):
+                k = pair_key(team[0]["id"], team[1]["id"])
+                if k in cpref:
+                    cost += -W["couple_want_pair"] if cpref[k] else W["couple_avoid_pair"]
         for team in (team1, team2):
             male = team[0] if team[0]["gender"] == "M" else team[1]
             female = team[1] if team[0]["gender"] == "M" else team[0]
@@ -814,8 +859,9 @@ def player_timing_cost(slots_sorted: list[int], eff_in: int) -> float:
     return cost
 
 
-def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> float:
-    """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트)."""
+def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
+                       couple_pref: dict | None = None) -> float:
+    """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트 / 부부 페어)."""
     t1 = [players_by_id[i] for i in match["team1"]]
     t2 = [players_by_id[i] for i in match["team2"]]
     exp_gap = abs((t1[0]["exp"] + t1[1]["exp"]) - (t2[0]["exp"] + t2[1]["exp"]))
@@ -835,6 +881,12 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool) -> fl
         # (여자 게스트는 혼복 가능)
         cost += G["guest_in_mixed"] * sum(
             1 for p in t1 + t2 if p["gender"] == "M" and p["membership"] == "게스트")
+        # 부부 페어: '피함' 부부 같은 팀 페널티 / '원함' 부부 같은 팀 보너스
+        if couple_pref:
+            for team_ids in (match["team1"], match["team2"]):
+                k = pair_key(team_ids[0], team_ids[1])
+                if k in couple_pref:
+                    cost += -G["couple_want_pair"] if couple_pref[k] else G["couple_avoid_pair"]
         # 혼복 자체의 개수 페널티는 허용량(mixed_quota)과 함께 봐야 하므로 full_score에서 계산한다.
     elif mtype == "F" and multi_club:
         cost -= G["women_doubles_bonus"]
@@ -961,8 +1013,9 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
         score += _matchup_cost(c)
 
     # 경기별 품질
+    cpref = state.get("couple_pref")
     for m in state["matches"]:
-        score += match_quality_cost(m, players_by_id, multi)
+        score += match_quality_cost(m, players_by_id, multi, cpref)
 
     # 혼복 개수: 허용량(단성 복식만으로는 소수 성별의 게임수를 못 채우는 만큼)까지는 가볍게,
     # 그 이상은 급격히 비싸게 — "우선순위는 남복/여복, 혼복은 1~2판까지"를 그대로 표현.
@@ -978,6 +1031,12 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
         short = eff_min_games(p) - state["player_games"][p["id"]]
         if short > 0:
             score += G["min_games_short"] * short * short
+
+    # 부부는 같이 오간다 — 마지막 경기 종료가 같거나 30분 안쪽 차이가 되게 (소프트)
+    for ida, idb, _w in state.get("couples", []):
+        sa = state["player_slots"].get(ida) or []
+        sb = state["player_slots"].get(idb) or []
+        score += couple_finish_cost(max(sa) if sa else None, max(sb) if sb else None)
 
     # 비어버린 코트-슬롯
     feasible_court_slots = 0
@@ -1015,7 +1074,35 @@ class Refiner:
         self.hist = state.get("hist_pair_penalty") or {}
         self.eff_in = state.get("eff_in", {})
         self.avail = {p["id"]: set(p.get("available_slots") or []) for p in players}
+        # 부부: 혼복 페어 항은 quality()가, 종료시각 맞추기는 교환 delta가 직접 본다
+        self.cpref = state.get("couple_pref") or {}
+        self.partner = {}
+        for ida, idb, _w in state.get("couples", []):
+            self.partner[ida] = idb
+            self.partner[idb] = ida
         self._sync()
+
+    def _finish_delta(self, new_slots_by_pid: dict) -> float:
+        """일부 선수의 시간표가 new_slots_by_pid로 바뀔 때 부부 종료시각 비용의 변화량."""
+        if not self.partner:
+            return 0.0
+        delta, seen = 0.0, set()
+        for pid in new_slots_by_pid:
+            mate = self.partner.get(pid)
+            if not mate:
+                continue
+            k = pair_key(pid, mate)
+            if k in seen:
+                continue
+            seen.add(k)
+            old_a = self.slots_of[pid][-1] if self.slots_of[pid] else None
+            new_sl = new_slots_by_pid[pid]
+            new_a = new_sl[-1] if new_sl else None
+            mate_sl_new = new_slots_by_pid.get(mate, self.slots_of[mate])
+            old_b = self.slots_of[mate][-1] if self.slots_of[mate] else None
+            new_b = mate_sl_new[-1] if mate_sl_new else None
+            delta += couple_finish_cost(new_a, new_b) - couple_finish_cost(old_a, old_b)
+        return delta
 
     # -- 파생 캐시 -----------------------------------------------------------
     def _sync(self) -> None:
@@ -1043,7 +1130,7 @@ class Refiner:
         return player_timing_cost(slots, self.eff_in.get(pid, self.pbid[pid]["in_min"]))
 
     def quality(self, m) -> float:
-        return match_quality_cost(m, self.pbid, self.multi)
+        return match_quality_cost(m, self.pbid, self.multi, self.cpref)
 
     def score(self) -> float:
         return full_score(self.state, self.players, self.schedule_slots)
@@ -1095,6 +1182,7 @@ class Refiner:
             new_sb = sorted([s for s in sb if s != s2] + [s1])
             delta = (self.timing(a_id, new_sa) - self.tcache[a_id]
                      + self.timing(b_id, new_sb) - self.tcache[b_id])
+            delta += self._finish_delta({a_id: new_sa, b_id: new_sb})
 
         old_q = self.qcache[mi1] + self.qcache[mi2]
         m1[side1][idx1], m2[side2][idx2] = b_id, a_id
@@ -1188,6 +1276,7 @@ class Refiner:
             nxt = sorted([s for s in cur if s != frm] + [to])
             new_slots[pid] = nxt
             delta += self.timing(pid, nxt) - self.tcache[pid]
+        delta += self._finish_delta(new_slots)
 
         old_q = self.qcache[mi1] + self.qcache[mi2]
         saved1 = {f: m1[f] for f in ROSTER_FIELDS}
@@ -1334,9 +1423,10 @@ def run_one_seed(
     seed: int,
     candidate_top_n: int,
     hist_pairs=None,
+    couples=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
-    state = init_state(players, hist_pairs, schedule_slots)
+    state = init_state(players, hist_pairs, schedule_slots, couples)
 
     for slot in schedule_slots:
         played_here = set()
@@ -1382,15 +1472,17 @@ def solve(
     refine: int = 6,
     kicks: int = 40,
     progress=None,
+    couples=None,
 ) -> dict:
     """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
 
     CLI(main)와 웹(Pyodide run.py)이 공유하는 단일 진입점.
+    couples = [[이름1, 이름2, 부부페어 원함], ...] — 혼복 페어 회피/우대 + 종료시각 맞추기.
     """
     results = []
     for i in range(max(1, iters)):
         s = seed + i
-        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs)
+        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples)
         results.append((score, s, state))
         if progress and (i + 1) % 10 == 0:
             progress(f"초안 {i + 1}/{iters}개 생성")
@@ -1500,6 +1592,12 @@ def main():
 
     players = data["players"]
     schedule_slots = data["schedule_slots"]
+    couples = data.get("couples") or None
+    if couples:
+        pref, lst = build_couples(players, couples)
+        if lst:
+            print(f"[안내] 부부 페어 반영: 이번 주 참가 부부 {len(lst)}쌍 "
+                  f"(혼복 페어 원함 {sum(1 for _, _, w in lst if w)}쌍) — 종료시각 30분 이내 맞추기 포함.")
 
     hist_pairs = None
     if args.history and os.path.exists(args.history):
@@ -1516,6 +1614,7 @@ def main():
         players, schedule_slots,
         seed=args.seed, iters=args.iters, candidates=args.candidates,
         hist_pairs=hist_pairs, refine=args.refine, kicks=args.kicks,
+        couples=couples,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

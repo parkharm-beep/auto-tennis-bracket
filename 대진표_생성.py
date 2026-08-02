@@ -57,6 +57,7 @@ INPUT_DIR   = BASE / "입력"
 OUTPUT_DIR  = BASE / "출력"
 SAMPLES_DIR = BASE / "샘플"
 DEFAULT_INPUT  = INPUT_DIR / "테니스_입력양식.xlsx"
+DEFAULT_MEMBERS = INPUT_DIR / "클럽멤버_설정.xlsx"   # 있으면 자동 반영 (부부 페어 등)
 
 WORKSPACE = BASE / "_workspace"
 HISTORY_JSON = WORKSPACE / "00_history.json"
@@ -164,6 +165,17 @@ def _resolve_prev(args, target_suffix: str) -> tuple[str | None, str | None]:
     return (None, None)
 
 
+def _members_args(args) -> list:
+    """parse_input에 넘길 멤버 설정 인자. 우선순위: --no-members > --members > 입력/ 자동감지 > 내장 기본값."""
+    if args.no_members:
+        return ["--no-members"]
+    if args.members:
+        return ["--members", args.members]
+    if DEFAULT_MEMBERS.exists():
+        return ["--members", str(DEFAULT_MEMBERS)]
+    return []   # parse_input이 내장 기본값(부부 4쌍) 사용
+
+
 def _run(label: str, cmd: list[str]) -> int:
     print(f"\n[{label}] {' '.join(str(c) for c in cmd[-4:])}")
     env = os.environ.copy()
@@ -198,7 +210,7 @@ def cmd_check(args) -> int:
     print("=" * 60)
     print(f"입력 양식 검사: {inp}")
     print("=" * 60)
-    rc = _run("입력 검사", [SCRIPTS["parse_input"], "--in", inp, "--out", check_json])
+    rc = _run("입력 검사", [SCRIPTS["parse_input"], "--in", inp, "--out", check_json, *_members_args(args)])
     if rc != 0:
         print("\n[결과] X 입력 양식에 오류가 있습니다.")
         print("       위의 [에러] 메시지를 보고 해당 칸을 고친 뒤 다시 검사하세요.")
@@ -288,7 +300,7 @@ def cmd_generate(args) -> int:
     print("=" * 60)
 
     rc = _run("1/4 입력 파싱",
-              [SCRIPTS["parse_input"], "--in", inp, "--out", PARSED_JSON])
+              [SCRIPTS["parse_input"], "--in", inp, "--out", PARSED_JSON, *_members_args(args)])
     if rc != 0:
         print("\n[중단] 입력 파싱 실패. 위의 [에러]/[경고] 메시지를 확인하세요.")
         return rc
@@ -356,6 +368,12 @@ def main():
                    help="이전 대진표 페어 회피를 사용하지 않음(명시적으로 끔)")
     p.add_argument("--check", action="store_true",
                    help="대진표 생성 없이 입력 양식만 검사 (오류·경고·구성 요약)")
+    p.add_argument("--members",
+                   help="멤버 설정 엑셀 경로 (부부 페어 등). 생략 시 입력/클럽멤버_설정.xlsx 자동 감지, 없으면 내장 기본값")
+    p.add_argument("--no-members", action="store_true",
+                   help="부부 페어 규칙을 끔")
+    p.add_argument("--create-members", action="store_true",
+                   help="멤버 설정 파일(멤버·부부 시트)을 입력/클럽멤버_설정.xlsx 로 생성")
     p.add_argument("--create-template", action="store_true",
                    help="대진표 생성 대신 빈 입력 양식만 생성")
     p.add_argument("--prefill", default="", choices=["", "image"],
@@ -364,6 +382,11 @@ def main():
 
     if args.create_template:
         return cmd_create_template(args)
+
+    if args.create_members:
+        INPUT_DIR.mkdir(exist_ok=True)
+        out = args.out or str(DEFAULT_MEMBERS)
+        return _run("멤버 설정 생성", [SCRIPTS["build_template"], "--out", out, "--member-settings"])
 
     if args.check:
         return cmd_check(args)

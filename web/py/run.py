@@ -16,11 +16,13 @@ from parse_input import (
     build_schedule_slots,
     attach_available_slots,
     min_to_hhmm,
+    parse_member_settings,
+    COUPLES_DEFAULT,
 )
 from schedule import solve
 from review import compute_scores
 from render_bracket import render
-from build_template import build_template
+from build_template import build_template, build_member_settings
 from history import extract_pairs_from_bracket_xlsx, DEFAULT_W1, DEFAULT_W2
 
 
@@ -130,11 +132,13 @@ def generate_bracket(
     prev2_bytes=None,
     refine: int = 4,
     kicks: int = 25,
+    members_bytes=None,
 ) -> dict:
     """입력 엑셀 bytes → {xlsx: bytes, review: dict, summary: dict}.
 
     prev1_bytes(1주전)/prev2_bytes(2주전)를 주면 그 대진표들과 겹치는 페어를 최대한 피한다.
     (우리 멤버끼리일 때만 실제 반영 — 교류전이면 자동 무시)
+    members_bytes(멤버 설정 엑셀)를 주면 그 파일의 부부 시트를, 없으면 내장 기본값을 쓴다.
     브라우저에서 호출 후 xlsx 필드를 Blob으로 만들어 다운로드.
 
     iters=초안 생성 횟수, refine/kicks=공백·대기 줄이는 로컬 개선 강도.
@@ -142,9 +146,27 @@ def generate_bracket(
     """
     parsed = _parse_bytes(xlsx_bytes)
     hist_pairs = _build_hist_pairs([(prev1_bytes, DEFAULT_W1), (prev2_bytes, DEFAULT_W2)])
+
+    # 부부 페어: 업로드한 멤버 설정 > 내장 기본값
+    couples = None
+    members_uploaded = False
+    mb = _to_bytes(members_bytes)
+    if mb:
+        try:
+            couples = parse_member_settings(BytesIO(mb))
+            members_uploaded = True
+        except Exception:
+            couples = None
+    if couples is None:
+        couples = [list(c) for c in COUPLES_DEFAULT]
+    parsed["couples"] = couples
+    names = {p["name"] for p in parsed["players"]}
+    couples_present = sum(1 for c in couples if c[0] in names and c[1] in names)
+
     bracket = solve(
         parsed["players"], parsed["schedule_slots"],
         seed=seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
+        couples=couples,
     )
     review = compute_scores(parsed, bracket, hist_pairs)
 
@@ -167,6 +189,9 @@ def generate_bracket(
             "history_pairs": len(hist_pairs),
             "history_repeat_pairs": review["scores"].get("history_repeat_pairs", 0),
             "history_ignored_exchange": bool(hist_pairs) and is_exchange,
+            "members_uploaded": members_uploaded,
+            "couples_total": len(couples),
+            "couples_present": couples_present,
         },
     }
 
@@ -179,16 +204,26 @@ def build_empty_template_bytes(prefill: str = "") -> bytes:
     return buf.getvalue()
 
 
+def build_member_settings_bytes() -> bytes:
+    """멤버 설정 엑셀(멤버·부부 시트, 내장 기본값)을 bytes로 반환."""
+    buf = BytesIO()
+    build_member_settings(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=20,
                                  title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None,
-                                 refine=4, kicks=25):
+                                 refine=4, kicks=25, members_bytes=None):
     """Pyodide JS 호출용 wrapper. JS의 Uint8Array를 받아 dict 반환.
 
     xlsx 결과는 별도 함수로 가져가도록 분리하지 않고, 결과 dict에 bytes 그대로 포함.
     prev1_bytes/prev2_bytes(있으면)로 지난주/2주전 페어를 회피.
+    members_bytes(있으면)로 부부 페어 설정을 덮어쓴다(없으면 내장 기본값).
     """
     main_bytes = _to_bytes(xlsx_bytes_bin)
     return generate_bracket(
         main_bytes, date_str=date_str, seed=seed, iters=iters, title=title,
         prev1_bytes=prev1_bytes, prev2_bytes=prev2_bytes, refine=refine, kicks=kicks,
+        members_bytes=members_bytes,
     )

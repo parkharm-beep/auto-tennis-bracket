@@ -73,6 +73,9 @@ description: 테니스 대진표 생성 알고리즘. 슬롯×코트 매트릭�
   후보 풀 정렬에서도 미달자를 최우선으로 올려 top_k 밖으로 밀리지 않게 한다.
 - **남자 게스트 혼복 페널티 (`guest_in_mixed=30/명`)** — 남자 게스트는 혼복보다 남복 위주.
   혼복의 남자 자리를 가급적 정회원이 맡게 미는 소프트 항(여자 게스트는 혼복 가능, 페널티 없음).
+- **부부 페어 (`couple_avoid_pair=250` / `couple_want_pair=40`)** — 멤버 설정(부부 시트) 기준.
+  '피함' 부부가 혼복 같은 팀이면 강한 페널티, '원함' 부부면 우대(음수). `build_couples()`가
+  이름→id 매핑(둘 다 이번 주 참가자일 때만).
 - 혼복 구력 규칙 위반(남<여) 1000 — 사실상 금지
 - 코트 affinity(A=여복/혼복, B=남복), 여성 07:30 이전 슬롯, 정회원·게스트 혼합
 - 교류전 여복 우대 `women_doubles_bonus=200`
@@ -109,6 +112,10 @@ full_score = balance_cost + Σ player_timing_cost + Σ pair_entry_cost
 - **최소게임수 미달 `min_games_short=900*(부족)²`** — 어기지 않는 규칙.
   보장 기준은 `eff_min_games()` = min(입력 최소게임수, 본인 가용 슬롯 수). `balance_under(400)`보다 위.
   로컬 개선(교환 수술)은 개인 게임수를 못 바꾸므로, 그리디 우대 + 이 항의 초안 선별로 지켜진다.
+- **부부 종료시각 `couple_finish_gap=120*(초과 30분 단위)²`** — 부부는 같이 오가므로 마지막 경기
+  종료가 같거나 30분 이내 차이가 목표. Refiner의 선수 교환·경기 이동 delta에 `_finish_delta()`로
+  반영되어 로컬 탐색이 직접 맞춘다. (실측: 70이면 60분 차 잔존, 200은 공백 증가 — 120이 균형점)
+  혼복 페어 항(`couple_avoid_pair=250`/`couple_want_pair=30`)은 `match_quality_cost`에 포함.
 - 빈 코트-슬롯 `missed=5000` (사실상 하드)
 
 ### 실질 도착 시각 (`build_eff_in`)
@@ -166,6 +173,8 @@ python .claude\skills\tennis-scheduling-algorithm\scripts\review.py `
 review는 `long_gaps`, `long_gap_players`, `total_idle_min`, `last_match_end`,
 `male_guest_mixed_seats`(혼복에 들어간 남자 게스트 자리 수 — 정보용)도 함께 보고한다.
 최소·최대 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 그룹 격차 비교에서 제외된다.
+부부 페어는 `couple_avoid_paired`(피함인데 혼복 같은팀 — medium 이슈), `couple_want_paired`,
+`couple_finish_over30`(종료차 30분 초과 — low 이슈)로 보고한다(모두 소프트, RETRY 사유 아님).
 
 ## 알고리즘 한계 (사용자에게 보고할 항목)
 

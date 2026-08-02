@@ -12,6 +12,8 @@ const itersEl = $("iters");
 const titleEl = $("title");
 const runBtn = $("run");
 const tplPrefillBtn = $("tpl-prefill");
+const tplMembersBtn = $("tpl-members");
+const membersEl = $("members");
 const summaryEl = $("summary");
 
 function log(msg) {
@@ -23,6 +25,7 @@ function log(msg) {
 function setBusy(busy, label = "대진표 생성") {
   runBtn.disabled = busy;
   tplPrefillBtn.disabled = busy;
+  if (tplMembersBtn) tplMembersBtn.disabled = busy;
   runBtn.textContent = busy ? "처리 중…" : label;
 }
 
@@ -69,6 +72,14 @@ worker.onmessage = (e) => {
     );
     log(`양식 다운로드 완료: ${fname}`);
     setBusy(false);
+  } else if (type === "member_settings_done") {
+    downloadBlob(
+      payload.xlsx,
+      "클럽멤버_설정.xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    log("멤버 설정 파일 다운로드 완료: 클럽멤버_설정.xlsx (부부 시트 수정 후 '멤버 설정' 칸에 올리면 반영)");
+    setBusy(false);
   }
 };
 
@@ -114,6 +125,15 @@ tplPrefillBtn.addEventListener("click", () => {
   worker.postMessage({ type: "template", payload: { prefill: "image" } });
 });
 
+if (tplMembersBtn) {
+  tplMembersBtn.addEventListener("click", () => {
+    if (!workerReady) { log("아직 준비 중입니다."); return; }
+    setBusy(true);
+    log("멤버 설정 파일 생성 요청…");
+    worker.postMessage({ type: "member_settings" });
+  });
+}
+
 if (prevClearBtn) {
   prevClearBtn.addEventListener("click", () => {
     prev1El.value = "";
@@ -144,9 +164,15 @@ runBtn.addEventListener("click", async () => {
   if (p1f) log(`지난주 대진표: ${p1f.name}`);
   if (p2f) log(`2주전 대진표: ${p2f.name}`);
 
+  const mf = membersEl && membersEl.files[0];
+  const members = mf ? await mf.arrayBuffer() : null;
+  if (mf) log(`멤버 설정: ${mf.name} (부부 페어 반영)`);
+  else log("멤버 설정: 내장 기본값 사용 (부부 4쌍)");
+
   const transfer = [buf];
   if (prev1) transfer.push(prev1);
   if (prev2) transfer.push(prev2);
+  if (members) transfer.push(members);
 
   worker.postMessage(
     {
@@ -155,6 +181,7 @@ runBtn.addEventListener("click", async () => {
         bytes: buf,
         prev1,
         prev2,
+        members,
         dateStr: dateEl.value || defaultDateStr(),
         seed: parseInt(seedEl.value, 10) || 7,
         iters: parseInt(itersEl.value, 10) || 20,
@@ -200,6 +227,11 @@ function handleDone({ xlsx, review, summary, elapsed }) {
           ? `<p><strong>지난 대진표 페어 회피</strong> 교류전이라 미적용</p>`
           : summary.history_pairs
           ? `<p><strong>지난 대진표 대비 반복 페어</strong> ${summary.history_repeat_pairs}쌍 (비교 대상 ${summary.history_pairs}쌍) — 적을수록 좋음</p>`
+          : ""
+      }
+      ${
+        summary.couples_present
+          ? `<p><strong>부부 페어</strong> 이번 주 참가 ${summary.couples_present}쌍 (${summary.members_uploaded ? "업로드한 설정" : "기본 설정"}) — 혼복 같은팀: 원함 ${(s.couple_want_paired || []).length ? (s.couple_want_paired || []).join(", ") : "없음"} / 피함인데 발생 ${(s.couple_avoid_paired || []).length ? (s.couple_avoid_paired || []).join(", ") : "0건"} · 종료 30분 초과 ${(s.couple_finish_over30 || []).length}쌍</p>`
           : ""
       }
       ${

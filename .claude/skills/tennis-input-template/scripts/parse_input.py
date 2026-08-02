@@ -12,6 +12,64 @@ import sys
 from openpyxl import load_workbook
 
 
+# ---------------------------------------------------------------------------
+# 클럽 멤버 설정 기본값 — 멤버 설정 파일(클럽멤버_설정.xlsx)이 없을 때 사용.
+# 26.8.2 카톡 투표 명단(25명, 사용자 확정본) 기준.
+# ---------------------------------------------------------------------------
+MEMBERS_DEFAULT = [
+    # (카톡아이디, 실제이름)
+    ("김도윤", "김도윤"), ("김효순", "김효순"), ("남궁석", "남궁석"), ("노남숙", "노남숙"),
+    ("명수기❤️", "서명숙"), ("민기준", "민기준"), ("박경수", "박경수"), ("박진우", "박진우"),
+    ("서종수", "서종수"), ("성현", "경성현"), ("원유철", "원유철"), ("이강진", "이강진"),
+    ("이성돈", "이성돈"), ("이성수", "이성수"), ("이지은", "이지은"), ("임성훈", "임성훈"),
+    ("정재동", "정재동"), ("정진락", "정진락"), ("정희", "정정희"), ("최종인", "최종인"),
+    ("한병익", "한병익"), ("혜선", "전혜선"), ("HJ Shin", "신혁재"), ("Joonhak Kim", "김준학"),
+    ("Mira", "방미라"),
+]
+
+# 부부 페어: (이름1, 이름2, 혼복에서 부부페어를 원하는지)
+# 원함=True → 혼복이 나올 때 부부가 같은 팀이 되는 것을 우대.
+# 피함=False → 부부를 같은 팀으로 묶지 않게 회피(소프트).
+COUPLES_DEFAULT = [
+    ("박경수", "서명숙", False),
+    ("한병익", "전혜선", True),
+    ("신혁재", "방미라", False),
+    ("원유철", "이지은", False),
+]
+
+_COUPLE_WANT_WORDS = ("원함", "희망", "허용", "O", "o", "예", "y", "Y")
+
+
+def parse_member_settings(source) -> list:
+    """멤버 설정 엑셀의 '부부' 시트에서 부부 페어를 읽는다 → [[이름1, 이름2, want], ...].
+
+    부부 시트가 없거나 비어 있으면 빈 목록. 셀 값이 '원함/희망/허용/O'면 want=True,
+    그 외('피함' 포함, 빈칸)는 False. 이름은 실제이름 기준(참가자 시트와 동일해야 매칭).
+    """
+    wb = load_workbook(source, data_only=True)
+    if "부부" not in wb.sheetnames:
+        return []
+    ws = wb["부부"]
+    headers = [str(c.value).strip() if c.value else "" for c in ws[1]]
+    try:
+        i1 = headers.index("이름1")
+        i2 = headers.index("이름2")
+        i3 = headers.index("부부페어") if "부부페어" in headers else 2
+    except ValueError:
+        i1, i2, i3 = 0, 1, 2
+    couples = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or len(row) <= max(i1, i2):
+            continue
+        a, b = row[i1], row[i2]
+        if not a or not b:
+            continue
+        raw = str(row[i3]).strip() if len(row) > i3 and row[i3] not in (None, "") else ""
+        want = raw in _COUPLE_WANT_WORDS
+        couples.append([str(a).strip(), str(b).strip(), want])
+    return couples
+
+
 def hhmm_to_min(s: str) -> int:
     s = str(s).strip()
     if not s or ":" not in s:
@@ -197,6 +255,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--members", default="",
+                    help="멤버 설정 엑셀(부부 시트) 경로. 생략 시 내장 기본값 사용.")
+    ap.add_argument("--no-members", action="store_true",
+                    help="부부 페어 규칙을 끔 (기본값도 사용 안 함)")
     args = ap.parse_args()
 
     if not os.path.exists(args.inp):
@@ -278,10 +340,33 @@ def main():
         for w in warnings:
             print(f"[경고] {w}", file=sys.stderr)
 
+    # 부부 페어 설정: 파일 지정 > 내장 기본값 > (--no-members) 없음
+    couples: list = []
+    if not args.no_members:
+        if args.members and os.path.exists(args.members):
+            try:
+                couples = parse_member_settings(args.members)
+                print(f"[안내] 멤버 설정 반영: {args.members} — 부부 {len(couples)}쌍"
+                      f" (부부페어 원함 {sum(1 for c in couples if c[2])}쌍)", file=sys.stderr)
+            except Exception as e:
+                print(f"[경고] 멤버 설정 파일을 읽지 못해 기본값을 사용합니다: {e}", file=sys.stderr)
+                couples = [list(c) for c in COUPLES_DEFAULT]
+        else:
+            if args.members:
+                print(f"[경고] 멤버 설정 파일 없음({args.members}) — 내장 기본값 사용", file=sys.stderr)
+            couples = [list(c) for c in COUPLES_DEFAULT]
+        names = {p["name"] for p in players}
+        present = [c for c in couples if c[0] in names and c[1] in names]
+        if present:
+            print(f"[안내] 이번 주 참가자 중 부부 {len(present)}쌍: "
+                  + ", ".join(f"{a}·{b}({'원함' if w else '피함'})" for a, b, w in present),
+                  file=sys.stderr)
+
     result = {
         "courts": courts,
         "players": players,
         "schedule_slots": schedule_slots,
+        "couples": couples,
         "warnings": warnings,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

@@ -79,13 +79,36 @@ _call_tpl
     return;
   }
 
+  if (type === "member_settings") {
+    if (!pyodide) {
+      postMessage({ type: "error", msg: "Pyodide가 아직 준비되지 않았습니다." });
+      return;
+    }
+    try {
+      postMessage({ type: "log", msg: "멤버 설정 파일 생성 중…" });
+      const callMs = pyodide.runPython(`
+def _call_ms():
+    import run
+    return run.build_member_settings_bytes()
+_call_ms
+      `);
+      const py_bytes = callMs();
+      const u8 = py_bytes.toJs();
+      py_bytes.destroy();
+      postMessage({ type: "member_settings_done", payload: { xlsx: u8 } }, [u8.buffer]);
+    } catch (err) {
+      postMessage({ type: "error", msg: String(err) + "\n" + (err.stack || "") });
+    }
+    return;
+  }
+
   if (type === "generate") {
     if (!pyodide) {
       postMessage({ type: "error", msg: "Pyodide가 아직 준비되지 않았습니다." });
       return;
     }
     try {
-      const { bytes, prev1, prev2, dateStr, seed, iters, title, refine, kicks } = payload;
+      const { bytes, prev1, prev2, dateStr, seed, iters, title, refine, kicks, members } = payload;
       const prevNote = prev1 || prev2 ? " · 지난 대진표 페어 회피 반영" : "";
       postMessage({
         type: "log",
@@ -93,11 +116,12 @@ _call_tpl
       });
 
       const callGen = pyodide.runPython(`
-def _call(input_buf, date_str, seed, iters, title, prev1, prev2, refine, kicks):
+def _call(input_buf, date_str, seed, iters, title, prev1, prev2, refine, kicks, members):
     import run
     return run.generate_bracket_json_result(
         input_buf, date_str=date_str, seed=seed, iters=iters, title=title,
         prev1_bytes=prev1, prev2_bytes=prev2, refine=refine, kicks=kicks,
+        members_bytes=members,
     )
 _call
       `);
@@ -105,8 +129,9 @@ _call
       const u8 = new Uint8Array(bytes);
       const p1 = prev1 ? new Uint8Array(prev1) : null;
       const p2 = prev2 ? new Uint8Array(prev2) : null;
+      const mB = members ? new Uint8Array(members) : null;
       const t0 = performance.now();
-      const py_result = callGen(u8, dateStr, seed, iters, title, p1, p2, refine, kicks);
+      const py_result = callGen(u8, dateStr, seed, iters, title, p1, p2, refine, kicks, mB);
       const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
 
       const result = py_result.toJs({ dict_converter: Object.fromEntries });
