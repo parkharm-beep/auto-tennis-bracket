@@ -93,7 +93,9 @@ setBusy(true, "초기화 중…");
 worker.postMessage({ type: "init" });
 
 function defaultDateStr() {
+  // 경기일은 토요일 — 기본값을 돌아오는 토요일로 (오늘이 토요일이면 오늘).
   const d = new Date();
+  d.setDate(d.getDate() + ((6 - d.getDay() + 7) % 7));
   const yy = String(d.getFullYear()).slice(2);
   return `${yy}.${d.getMonth() + 1}.${d.getDate()}`;
 }
