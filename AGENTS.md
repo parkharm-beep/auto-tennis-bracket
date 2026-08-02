@@ -11,7 +11,7 @@
 **워크플로우:**
 - **Phase A (입력 템플릿 생성):** "양식 만들어줘" → `excel-renderer` 단독 호출
 - **Phase B (대진표 생성):** 채워진 입력 엑셀 제공 → 4-에이전트 팀(`requirements-parser → bracket-composer ⇄ bracket-reviewer → excel-renderer`)
-- **Phase C (주간 입력 초안):** 카카오 일정 URL → browse로 참석/불참/게스트 읽기 → `build_draft.py`로 입력 엑셀 초안('금배'=20년, 상세는 CLAUDE.md·오케스트레이터 스킬)
+- **Phase C (주간 입력 초안):** 카카오 일정 URL → browse로 참석/불참/게스트 읽기 → `build_draft.py`로 입력 엑셀 초안(금배=20년·은배=15년·동배=10년, 상세는 CLAUDE.md·오케스트레이터 스킬)
 
 **중간 산출물:** `_workspace/01_parsed.json`, `02_bracket.json`, `03_review.json` — 재실행/부분 수정 시 활용. 새 실행 시 기존 `_workspace/`는 `_workspace_prev/`로 이동.
 

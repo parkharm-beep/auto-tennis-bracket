@@ -33,7 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_input import MEMBERS_DEFAULT, parse_member_roster  # noqa: E402
 from build_template import PREFILL_FROM_IMAGE, build_template  # noqa: E402
 
-KEUMBAE_EXP = 20   # '금배' = 구력 20년 이상으로 간주 (사용자 확정, 26.8.2)
+# 클럽 등급 호칭 → 구력 환산 (사용자 확정, 26.8.2): 금배 20년+, 은배 15년+, 동배 10년+
+RANK_EXP = {"금배": 20, "은배": 15, "동배": 10}
 
 
 def _norm(s: str) -> str:
@@ -52,16 +53,16 @@ def parse_schedule_text(text: str) -> dict:
         (attend if m.group(1) == "참석" else absent).append(name)
 
     guests = []
-    for m in re.finditer(r"([가-힣A-Za-z]{2,10}?)\s*님?\s*게스트\s*(금배|\d+\s*년|\d+)?", text):
+    for m in re.finditer(r"([가-힣A-Za-z]{2,10}?)\s*님?\s*게스트\s*(금배|은배|동배|\d+\s*년|\d+)?", text):
         name = re.sub(r"님$", "", m.group(1))   # '권명숙님' → '권명숙'
         raw = (m.group(2) or "").strip()
-        if raw == "금배":
-            exp = KEUMBAE_EXP
+        if raw in RANK_EXP:
+            exp = RANK_EXP[raw]
         elif raw:
             exp = int(re.sub(r"\D", "", raw))
         else:
             exp = None
-        guests.append({"name": name, "exp": exp})
+        guests.append({"name": name, "exp": exp, "rank": raw if raw in RANK_EXP else ""})
 
     date = None
     dm = re.search(r"(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", text)
@@ -116,7 +117,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
             "name": g["name"], "gender": gg.get(g["name"], ""), "exp": g["exp"] if g["exp"] is not None else "",
             "mem": "게스트", "in_t": "07:00", "out_t": "12:00",
             "min_g": "", "max_g": guest_max if guest_max else "",
-            "memo": "게스트" + (" · 구력 금배(20년 이상)" if g["exp"] == KEUMBAE_EXP else ""),
+            "memo": "게스트" + (f" · 구력 {g['rank']}({g['exp']}년 이상)" if g.get("rank") else ""),
         })
 
     # 양식 골격 생성 후 참가자 시트를 초안 명단으로 교체

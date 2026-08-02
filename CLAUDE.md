@@ -11,7 +11,7 @@
 **워크플로우:**
 - **Phase A (입력 템플릿 생성):** "양식 만들어줘" → `excel-renderer` 단독 호출
 - **Phase B (대진표 생성):** 채워진 입력 엑셀 제공 → 4-에이전트 팀(`requirements-parser → bracket-composer ⇄ bracket-reviewer → excel-renderer`)
-- **Phase C (주간 입력 초안):** 카카오 캘린더 일정 URL 제공("이번 주 대진 초안") → gstack browse(로그인 세션 유지)로 일정을 읽어 참석/불참/게스트 추출 → `build_draft.py`가 멤버 설정(성별·구력)·사전채움(평소 IN/OUT·최소/최대)을 참조해 입력 엑셀 초안 생성 → `--check` 요약 보고 → 사용자 수정 후 생성. '금배'=구력 20년, 게스트 기본 최대4, 명단 밖 이름은 제외+경고. 상세 절차는 오케스트레이터 스킬 Phase C 참조
+- **Phase C (주간 입력 초안):** 카카오 캘린더 일정 URL 제공("이번 주 대진 초안") → gstack browse(로그인 세션 유지)로 일정을 읽어 참석/불참/게스트 추출 → `build_draft.py`가 멤버 설정(성별·구력)·사전채움(평소 IN/OUT·최소/최대)을 참조해 입력 엑셀 초안 생성 → `--check` 요약 보고 → 사용자 수정 후 생성. **등급 호칭 구력 환산: 금배=20년·은배=15년·동배=10년**(`RANK_EXP`), 게스트 기본 최대4, 명단 밖 이름은 제외+경고. 상세 절차는 오케스트레이터 스킬 Phase C 참조
 
 **중간 산출물:** `_workspace/01_parsed.json`, `02_bracket.json`, `03_review.json` — 재실행/부분 수정 시 활용. 새 실행 시 기존 `_workspace/`는 `_workspace_prev/`로 이동.
 
