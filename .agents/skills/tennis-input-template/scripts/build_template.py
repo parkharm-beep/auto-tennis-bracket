@@ -300,14 +300,20 @@ def build_member_settings(out_path) -> None:
 
     ws = wb.active
     ws.title = "멤버"
-    for col_idx, (title, w) in enumerate([("번호", 6), ("카톡아이디", 18), ("실제이름", 14)], start=1):
+    for col_idx, (title, w) in enumerate(
+            [("번호", 6), ("카톡아이디", 18), ("실제이름", 14), ("성별", 8), ("구력", 8), ("메모", 28)], start=1):
         cell = ws.cell(row=1, column=col_idx, value=title)
         _style_header(cell)
         ws.column_dimensions[get_column_letter(col_idx)].width = w
-    for i, (kid, real) in enumerate(MEMBERS_DEFAULT, 1):
-        for c, v in ((1, i), (2, kid), (3, real)):
-            cell = ws.cell(row=i + 1, column=c, value=v)
+    for i, (kid, real, gender, exp, memo) in enumerate(MEMBERS_DEFAULT, 1):
+        for c, v in ((1, i), (2, kid), (3, real), (4, gender), (5, exp), (6, memo)):
+            cell = ws.cell(row=i + 1, column=c, value=v if v != "" else None)
             _style_body(cell)
+        if memo:
+            ws.cell(row=i + 1, column=5).fill = PREFILL_NOTE_FILL   # 확인 필요한 구력 강조
+    dv_g = DataValidation(type="list", formula1='"남,여"', allow_blank=True)
+    dv_g.add(f"D2:D{len(MEMBERS_DEFAULT) + 6}")
+    ws.add_data_validation(dv_g)
     ws.freeze_panes = "A2"
 
     ws2 = wb.create_sheet("부부")
