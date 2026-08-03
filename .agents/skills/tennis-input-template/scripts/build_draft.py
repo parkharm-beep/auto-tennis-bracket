@@ -93,8 +93,8 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         by_key[_norm(mrow["name"])] = mrow
 
     # 사전채움 로스터: 개인별 평소 IN/OUT·최소/최대게임수
-    prefill = {name: dict(in_t=in_t, out_t=out_t, min_g=min_g, max_g=max_g)
-               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, _memo) in PREFILL_FROM_IMAGE}
+    prefill = {name: dict(in_t=in_t, out_t=out_t, min_g=min_g, max_g=max_g, memo=memo)
+               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, memo) in PREFILL_FROM_IMAGE}
 
     rows, unknown = [], []
     guest_names = {_norm(g["name"]) for g in parsed["guests"]}
@@ -108,7 +108,8 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         rows.append({
             "name": m["name"], "gender": m["gender"], "exp": m["exp"], "mem": "정회원",
             "in_t": pf.get("in_t") or "07:00", "out_t": pf.get("out_t") or "12:00",
-            "min_g": pf.get("min_g") or "", "max_g": pf.get("max_g") or "", "memo": "",
+            "min_g": pf.get("min_g") or "", "max_g": pf.get("max_g") or "",
+            "memo": pf.get("memo") or "",
         })
 
     gg = guest_genders or {}
