@@ -46,14 +46,16 @@ MEMBERS_DEFAULT = [
     ("Mira",        "방미라", "여", 3,  ""),
 ]
 
-# 부부 페어: (이름1, 이름2, 혼복에서 부부페어를 원하는지)
+# 부부 페어: (이름1, 이름2, 혼복에서 부부페어를 원하는지, 종료시간차)
 # 원함=True → 혼복이 나올 때 부부가 같은 팀이 되는 것을 우대.
 # 피함=False → 부부를 같은 팀으로 묶지 않게 회피(소프트).
+# 종료시간차: None=같이 끝남(30분 이내 목표) / 30=마지막 경기 종료가 반드시 정확히 30분 차이
+#   (신혁재·방미라 — 26.8.6 사용자 확정 '기본 반영 사항').
 COUPLES_DEFAULT = [
-    ("박경수", "서명숙", False),
-    ("한병익", "전혜선", True),
-    ("신혁재", "방미라", False),
-    ("원유철", "이지은", False),
+    ("박경수", "서명숙", False, None),
+    ("한병익", "전혜선", True,  None),
+    ("신혁재", "방미라", False, 30),
+    ("원유철", "이지은", False, None),
 ]
 
 _COUPLE_WANT_WORDS = ("원함", "희망", "허용", "O", "o", "예", "y", "Y")
@@ -97,10 +99,12 @@ def parse_member_roster(source) -> list:
 
 
 def parse_member_settings(source) -> list:
-    """멤버 설정 엑셀의 '부부' 시트에서 부부 페어를 읽는다 → [[이름1, 이름2, want], ...].
+    """멤버 설정 엑셀의 '부부' 시트에서 부부 페어를 읽는다 → [[이름1, 이름2, want, 종료시간차], ...].
 
     부부 시트가 없거나 비어 있으면 빈 목록. 셀 값이 '원함/희망/허용/O'면 want=True,
     그 외('피함' 포함, 빈칸)는 False. 이름은 실제이름 기준(참가자 시트와 동일해야 매칭).
+    종료시간차: 빈칸/'같이'=같이 끝남(30분 이내 목표) / '30분차이'=반드시 정확히 30분 차이(→30).
+    구양식(컬럼 없음)도 그대로 읽힌다(전부 기본값).
     """
     wb = load_workbook(source, data_only=True)
     if "부부" not in wb.sheetnames:
@@ -113,6 +117,7 @@ def parse_member_settings(source) -> list:
         i3 = headers.index("부부페어") if "부부페어" in headers else 2
     except ValueError:
         i1, i2, i3 = 0, 1, 2
+    i4 = headers.index("종료시간차") if "종료시간차" in headers else None
     couples = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row or len(row) <= max(i1, i2):
@@ -122,7 +127,12 @@ def parse_member_settings(source) -> list:
             continue
         raw = str(row[i3]).strip() if len(row) > i3 and row[i3] not in (None, "") else ""
         want = raw in _COUPLE_WANT_WORDS
-        couples.append([str(a).strip(), str(b).strip(), want])
+        gap = None
+        if i4 is not None and len(row) > i4 and row[i4] not in (None, ""):
+            raw4 = str(row[i4]).replace(" ", "")
+            if "30" in raw4 and "이내" not in raw4:   # '30분차이', '정확히30분' 등
+                gap = 30
+        couples.append([str(a).strip(), str(b).strip(), want, gap])
     return couples
 
 
@@ -414,8 +424,13 @@ def main():
         names = {p["name"] for p in players}
         present = [c for c in couples if c[0] in names and c[1] in names]
         if present:
+            def _ctag(c):
+                tag = "원함" if c[2] else "피함"
+                if len(c) > 3 and c[3]:
+                    tag += "·종료 30분차이"
+                return f"{c[0]}·{c[1]}({tag})"
             print(f"[안내] 이번 주 참가자 중 부부 {len(present)}쌍: "
-                  + ", ".join(f"{a}·{b}({'원함' if w else '피함'})" for a, b, w in present),
+                  + ", ".join(_ctag(c) for c in present),
                   file=sys.stderr)
 
     result = {

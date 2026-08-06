@@ -324,10 +324,12 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["type_count"] = bracket.get("type_count", {})
 
     # 부부 페어: '피함' 부부 혼복 같은팀 / 종료시각 30분 초과 차이 (둘 다 소프트 — 정보용)
+    # 종료시간차=30 부부(신혁재·방미라)는 반대로 '정확히 30분 차이' 미달성을 보고한다.
     couples = parsed.get("couples") or []
     name_to_id = {p["name"]: p["id"] for p in parsed["players"]}
     stats_by_id = {s["id"]: s for s in player_stats}
     couple_avoid_paired, couple_want_paired, couple_finish_over = [], [], []
+    couple_gap30_missed = []
     team_pairs = set()
     for m in matches:
         if m["type"] != "X":
@@ -350,11 +352,25 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                     "code": "couple_pair_avoid_failed",
                     "msg": f"부부 페어 회피 실패: {a}+{b} 혼복 같은 팀 (설정: 피함 — 인원 사정상 불가피할 수 있음)",
                 })
+        gap_target = None
+        if len(entry) > 3 and entry[3] not in (None, "", False):
+            try:
+                gap_target = int(entry[3])
+            except (TypeError, ValueError):
+                gap_target = None
         sa = sorted(stats_by_id[ida]["slots_played"])
         sb = sorted(stats_by_id[idb]["slots_played"])
         if sa and sb:
             diff = abs(sa[-1] - sb[-1])
-            if diff > 30:
+            if gap_target:
+                if diff != gap_target:
+                    couple_gap30_missed.append(f"{a}+{b}({diff}분)")
+                    issues.append({
+                        "severity": "medium",
+                        "code": "couple_finish_gap_exact",
+                        "msg": f"부부 종료 {gap_target}분 차이 미달성: {a} {min_to_hhmm(sa[-1]+30)} / {b} {min_to_hhmm(sb[-1]+30)} 종료 — {diff}분 차이 (목표 정확히 {gap_target}분)",
+                    })
+            elif diff > 30:
                 couple_finish_over.append(f"{a}+{b}({diff}분)")
                 issues.append({
                     "severity": "low",
@@ -364,6 +380,7 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["couple_avoid_paired"] = couple_avoid_paired
     scores["couple_want_paired"] = couple_want_paired
     scores["couple_finish_over30"] = couple_finish_over
+    scores["couple_gap30_missed"] = couple_gap30_missed
 
     # 남자 게스트 남복 우선 — 혼복에 들어간 남자 게스트 자리 수 (정보용, 소프트 선호).
     # 여자 게스트는 혼복 가능이라 세지 않는다.
@@ -477,6 +494,8 @@ def print_report(review: dict) -> None:
         print(f"부부 페어 성사(원함): {', '.join(s['couple_want_paired'])}")
     if s.get("couple_finish_over30"):
         print(f"부부 종료시각 30분 초과: {', '.join(s['couple_finish_over30'])}")
+    if s.get("couple_gap30_missed"):
+        print(f"부부 종료 30분 차이 미달성: {', '.join(s['couple_gap30_missed'])}")
     if s.get("is_exchange"):
         print(f"교류전: 클럽 {', '.join(s.get('clubs', []))}  |  클럽혼합 페어(위반) {s.get('cross_club_pairs', 0)}건, 같은클럽끼리 경기 {s.get('same_club_matches', 0)}건")
     print("-" * 60)

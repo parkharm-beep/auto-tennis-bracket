@@ -233,7 +233,7 @@ function handleDone({ xlsx, review, summary, elapsed }) {
       }
       ${
         summary.couples_present
-          ? `<p><strong>부부 페어</strong> 이번 주 참가 ${summary.couples_present}쌍 (${summary.members_uploaded ? "업로드한 설정" : "기본 설정"}) — 혼복 같은팀: 원함 ${(s.couple_want_paired || []).length ? (s.couple_want_paired || []).join(", ") : "없음"} / 피함인데 발생 ${(s.couple_avoid_paired || []).length ? (s.couple_avoid_paired || []).join(", ") : "0건"} · 종료 30분 초과 ${(s.couple_finish_over30 || []).length}쌍</p>`
+          ? `<p><strong>부부 페어</strong> 이번 주 참가 ${summary.couples_present}쌍 (${summary.members_uploaded ? "업로드한 설정" : "기본 설정"}) — 혼복 같은팀: 원함 ${(s.couple_want_paired || []).length ? (s.couple_want_paired || []).join(", ") : "없음"} / 피함인데 발생 ${(s.couple_avoid_paired || []).length ? (s.couple_avoid_paired || []).join(", ") : "0건"} · 종료 30분 초과 ${(s.couple_finish_over30 || []).length}쌍${(s.couple_gap30_missed || []).length ? ` · 종료 30분차이 미달성 ${(s.couple_gap30_missed || []).join(", ")}` : ""}</p>`
           : ""
       }
       ${

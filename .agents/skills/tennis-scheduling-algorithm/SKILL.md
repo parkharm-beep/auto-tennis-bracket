@@ -116,6 +116,9 @@ full_score = balance_cost + Σ player_timing_cost + Σ pair_entry_cost
   종료가 같거나 30분 이내 차이가 목표. Refiner의 선수 교환·경기 이동 delta에 `_finish_delta()`로
   반영되어 로컬 탐색이 직접 맞춘다. (실측: 70이면 60분 차 잔존, 200은 공백 증가 — 120이 균형점)
   혼복 페어 항(`couple_avoid_pair=250`/`couple_want_pair=30`)은 `match_quality_cost`에 포함.
+  - **예외: 종료시간차=30 부부(신혁재·방미라)** — 반대로 마지막 경기 종료가 **반드시 정확히 30분
+    차이**여야 한다(같이 끝나도 위반). `couple_finish_exact=600*(|차이-30분|/30분)²`로 강하게 걸어
+    사실상 강제. 부부 목록 4번째 원소(gap)가 None이면 기존 '이내' 방식, 30이면 이 방식.
 - 빈 코트-슬롯 `missed=5000` (사실상 하드)
 
 ### 실질 도착 시각 (`build_eff_in`)
@@ -174,7 +177,8 @@ review는 `long_gaps`, `long_gap_players`, `total_idle_min`, `last_match_end`,
 `male_guest_mixed_seats`(혼복에 들어간 남자 게스트 자리 수 — 정보용)도 함께 보고한다.
 최소·최대 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 그룹 격차 비교에서 제외된다.
 부부 페어는 `couple_avoid_paired`(피함인데 혼복 같은팀 — medium 이슈), `couple_want_paired`,
-`couple_finish_over30`(종료차 30분 초과 — low 이슈)로 보고한다(모두 소프트, RETRY 사유 아님).
+`couple_finish_over30`(종료차 30분 초과 — low 이슈), `couple_gap30_missed`(종료시간차=30 부부가
+정확히 30분 차이가 아님 — medium 이슈)로 보고한다(모두 소프트, RETRY 사유 아님).
 
 ## 알고리즘 한계 (사용자에게 보고할 항목)
 

@@ -104,6 +104,8 @@ G = dict(
     couple_finish_gap=120.0,    # 부부 마지막 경기 종료 차이가 30분을 넘으면 (초과 30분 단위)^2
                                 # 부부는 같이 오가므로 같이 끝나거나 30분 안쪽 차이가 목표 (소프트).
                                 # 실측(21명 샘플): 70이면 60분 차가 남고, 200은 공백이 늘어남 — 120이 균형점.
+    couple_finish_exact=600.0,  # '반드시 30분 차이' 부부(종료시간차=30) — 정확히 30분에서 벗어난 (30분 단위)^2.
+                                # 같이 끝나도 위반이므로 couple_finish_gap보다 훨씬 세게 걸어 사실상 강제.
     accept_tolerance=90.0,      # 교란 후 이 정도 나빠짐까지는 받아들여 탐색을 넓힌다(점점 0으로)
 )
 
@@ -284,9 +286,10 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
 
 
 def build_couples(players: list[dict], couples) -> tuple[dict, list]:
-    """이름 기준 부부 목록([[이름1, 이름2, want], ...]) → 이번 주 id 기준 매핑.
+    """이름 기준 부부 목록([[이름1, 이름2, want(, 종료시간차)], ...]) → 이번 주 id 기준 매핑.
 
-    둘 다 이번 주 참가자일 때만 반영. 반환: (pair_key→want, [(ida, idb, want), ...])
+    종료시간차(선택, 분): None=같이 끝남(30분 이내 목표) / 30=반드시 정확히 30분 차이.
+    둘 다 이번 주 참가자일 때만 반영. 반환: (pair_key→want, [(ida, idb, want, gap), ...])
     """
     name_to_id = {p["name"]: p["id"] for p in players}
     pref, lst = {}, []
@@ -295,18 +298,32 @@ def build_couples(players: list[dict], couples) -> tuple[dict, list]:
             continue
         a, b = str(entry[0]), str(entry[1])
         want = bool(entry[2]) if len(entry) > 2 else False
+        gap = None
+        if len(entry) > 3 and entry[3] not in (None, "", False):
+            try:
+                gap = int(entry[3])
+            except (TypeError, ValueError):
+                gap = None
         ida, idb = name_to_id.get(a), name_to_id.get(b)
         if ida and idb and ida != idb:
             pref[pair_key(ida, idb)] = want
-            lst.append((ida, idb, want))
+            lst.append((ida, idb, want, gap))
     return pref, lst
 
 
-def couple_finish_cost(last_a, last_b) -> float:
-    """부부 두 사람의 마지막 경기 슬롯 차이 비용. 30분 이내는 0, 그 이상은 제곱 페널티."""
+def couple_finish_cost(last_a, last_b, gap=None) -> float:
+    """부부 두 사람의 마지막 경기 슬롯 차이 비용.
+
+    gap=None(기본): 같이 끝나는 부부 — 30분 이내는 0, 그 이상은 제곱 페널티.
+    gap=30: '반드시 30분 차이' 부부 — 정확히 30분에서 벗어난 만큼 제곱 페널티(같이 끝나도 위반).
+    """
     if last_a is None or last_b is None:
         return 0.0
-    u = abs(last_a - last_b) / 30.0 - 1.0
+    diff = abs(last_a - last_b)
+    if gap:
+        u = abs(diff - gap) / 30.0
+        return G["couple_finish_exact"] * u * u
+    u = diff / 30.0 - 1.0
     return G["couple_finish_gap"] * u * u if u > 0 else 0.0
 
 
@@ -1033,10 +1050,11 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
             score += G["min_games_short"] * short * short
 
     # 부부는 같이 오간다 — 마지막 경기 종료가 같거나 30분 안쪽 차이가 되게 (소프트)
-    for ida, idb, _w in state.get("couples", []):
+    # 단, 종료시간차=30 부부(신혁재·방미라)는 반대로 '정확히 30분 차이'를 목표로 한다.
+    for ida, idb, _w, gap in state.get("couples", []):
         sa = state["player_slots"].get(ida) or []
         sb = state["player_slots"].get(idb) or []
-        score += couple_finish_cost(max(sa) if sa else None, max(sb) if sb else None)
+        score += couple_finish_cost(max(sa) if sa else None, max(sb) if sb else None, gap)
 
     # 비어버린 코트-슬롯
     feasible_court_slots = 0
@@ -1077,9 +1095,11 @@ class Refiner:
         # 부부: 혼복 페어 항은 quality()가, 종료시각 맞추기는 교환 delta가 직접 본다
         self.cpref = state.get("couple_pref") or {}
         self.partner = {}
-        for ida, idb, _w in state.get("couples", []):
+        self.couple_gap = {}   # pair_key → 종료시간차 목표(None=이내 / 30=정확히 30분)
+        for ida, idb, _w, gap in state.get("couples", []):
             self.partner[ida] = idb
             self.partner[idb] = ida
+            self.couple_gap[pair_key(ida, idb)] = gap
         self._sync()
 
     def _finish_delta(self, new_slots_by_pid: dict) -> float:
@@ -1101,7 +1121,8 @@ class Refiner:
             mate_sl_new = new_slots_by_pid.get(mate, self.slots_of[mate])
             old_b = self.slots_of[mate][-1] if self.slots_of[mate] else None
             new_b = mate_sl_new[-1] if mate_sl_new else None
-            delta += couple_finish_cost(new_a, new_b) - couple_finish_cost(old_a, old_b)
+            gap = self.couple_gap.get(k)
+            delta += couple_finish_cost(new_a, new_b, gap) - couple_finish_cost(old_a, old_b, gap)
         return delta
 
     # -- 파생 캐시 -----------------------------------------------------------
@@ -1596,8 +1617,11 @@ def main():
     if couples:
         pref, lst = build_couples(players, couples)
         if lst:
+            n_exact = sum(1 for c in lst if c[3])
             print(f"[안내] 부부 페어 반영: 이번 주 참가 부부 {len(lst)}쌍 "
-                  f"(혼복 페어 원함 {sum(1 for _, _, w in lst if w)}쌍) — 종료시각 30분 이내 맞추기 포함.")
+                  f"(혼복 페어 원함 {sum(1 for c in lst if c[2])}쌍"
+                  + (f", 종료 30분 차이 {n_exact}쌍" if n_exact else "")
+                  + ") — 종료시각 맞추기 포함.")
 
     hist_pairs = None
     if args.history and os.path.exists(args.history):
