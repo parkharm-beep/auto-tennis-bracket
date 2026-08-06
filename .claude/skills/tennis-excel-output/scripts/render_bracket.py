@@ -11,6 +11,7 @@ import json
 import os
 from collections import defaultdict
 from openpyxl import Workbook
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -47,59 +48,121 @@ def min_to_hhmm(v: int) -> str:
 
 
 FONT_STAT = Font(name="맑은 고딕", size=10)
-FONT_STAT_WARN = Font(name="맑은 고딕", size=10, bold=True, color="C00000")
 
 
-def _collect_person_stats(player_stats: list[dict], matches: list[dict]) -> dict:
-    """통계 시트용 사람별 지표 계산 (생성 시점의 bracket 기준).
+GRID_SHEET = "대진표"
+CALC_SHEET = "통계_계산"
 
-    최대 연속 게임수 / 최대 연속 휴식(경기 사이 최장 공백) / 1시간+ 공백 횟수 /
-    총 대기시간 / 복식 종류별 게임수 / 파트너 수·같은 짝 반복.
+
+def _build_calc_sheet(wb, ordered: list[dict], grid: dict, stats_header_row: int):
+    """숨김 시트 '통계_계산': 대진표 '성함' 칸을 수식으로 읽는 사람×슬롯 매트릭스.
+
+    블록 구성 (사람=행, 슬롯=열):
+      P=출전(0/1) · S=연속게임 run · R=휴식연속(첫 경기 전 0 게이트) ·
+      G=경기 직전 공백 슬롯수 · T=같은 팀 파트너 이름
+    끝에 첫 슬롯 시작(분)·마지막 종료(분) 열. 통계 시트의 파생 지표가 전부
+    이 매트릭스를 참조하므로 대진표를 손으로 고치면 통계도 자동 재계산된다.
     """
-    type_cnt = {s["id"]: {"M": 0, "F": 0, "X": 0} for s in player_stats}
-    partners = {s["id"]: defaultdict(int) for s in player_stats}
-    for m in matches:
-        for team in (m["team1"], m["team2"]):
-            a, b = team
-            type_cnt[a][m["type"]] += 1
-            type_cnt[b][m["type"]] += 1
-            partners[a][b] += 1
-            partners[b][a] += 1
+    slots = grid["schedule_slots"]
+    n = len(slots)
+    ws = wb.create_sheet(CALC_SHEET)
+    ws.sheet_state = "hidden"
 
-    out = {}
-    for s in player_stats:
-        pid = s["id"]
-        slots = sorted(s["slots_played"])
-        gaps = [slots[i] - slots[i - 1] - 30 for i in range(1, len(slots))]
-        best = run = 0
-        prev = None
-        for sl in slots:
-            run = run + 1 if (prev is not None and sl - prev == 30) else 1
-            best = max(best, run)
-            prev = sl
-        start_delay = s.get("start_delay")
-        if start_delay is None:
-            start_delay = max(0, slots[0] - s.get("eff_in", s["in_min"])) if slots else 0
-        pd = partners[pid]
-        out[pid] = dict(
-            slots=slots,
-            max_streak=best,
-            max_rest=max((g for g in gaps if g > 0), default=0),
-            long_gaps=sum(1 for g in gaps if g >= 60),
-            start_delay=start_delay,
-            total_idle=start_delay + sum(g for g in gaps if g > 0),
-            types=type_cnt[pid],
-            partner_n=len(pd),
-            partner_rep=sum(c - 1 for c in pd.values() if c > 1),
-        )
-    return out
+    L = get_column_letter
+    c0 = 4  # A=이름, B=실질도착(분), C=여백
+    blocks = {k: c0 + i * n for i, k in enumerate(("P", "S", "R", "G", "T"))}
+    col_first = c0 + 5 * n
+    col_last = col_first + 1
+    grid_c0 = L(grid["courts_col_start"])
+    grid_c1 = L(grid["courts_col_end"])
+
+    ws.cell(row=3, column=1, value="이름")
+    ws.cell(row=3, column=2, value="실질도착(분)")
+    for k, label in (("P", "출전(슬롯별)"), ("S", "연속게임"), ("R", "휴식연속"),
+                     ("G", "직전공백(슬롯)"), ("T", "파트너")):
+        ws.cell(row=3, column=blocks[k], value=label)
+    ws.cell(row=3, column=col_first, value="첫슬롯(분)")
+    ws.cell(row=3, column=col_last, value="종료(분)")
+    for j, sl in enumerate(slots):  # 행1=슬롯 시작(분)·행2=종료(분), P 블록 컬럼에 정렬
+        ws.cell(row=1, column=blocks["P"] + j, value=sl["slot_start"])
+        ws.cell(row=2, column=blocks["P"] + j, value=sl["slot_end"])
+
+    refs = []
+    for idx, s in enumerate(ordered):
+        r = 4 + idx
+        stats_row = stats_header_row + 1 + idx
+        ws.cell(row=r, column=1, value=f"='통계'!$B${stats_row}")
+        ws.cell(row=r, column=2, value=s.get("eff_in", s["in_min"]))
+
+        p_cols = [L(blocks["P"] + j) for j in range(n)]
+        s_cols = [L(blocks["S"] + j) for j in range(n)]
+        r_cols = [L(blocks["R"] + j) for j in range(n)]
+        g_cols = [L(blocks["G"] + j) for j in range(n)]
+        t_cols = [L(blocks["T"] + j) for j in range(n)]
+
+        for j in range(n):
+            nr = grid["data_start_row"] + 2 * j  # 이 슬롯의 '성함' 행
+            ws.cell(row=r, column=blocks["P"] + j,
+                    value=f"=IF(COUNTIF('{GRID_SHEET}'!${grid_c0}${nr}:${grid_c1}${nr},$A{r})>0,1,0)")
+            if j == 0:
+                ws.cell(row=r, column=blocks["S"], value=f"={p_cols[0]}{r}")
+                ws.cell(row=r, column=blocks["R"], value=0)
+                ws.cell(row=r, column=blocks["G"], value=0)
+            else:
+                ws.cell(row=r, column=blocks["S"] + j,
+                        value=f"=IF({p_cols[j]}{r}=1,{s_cols[j - 1]}{r}+1,0)")
+                ws.cell(row=r, column=blocks["R"] + j,
+                        value=(f"=IF({p_cols[j]}{r}=1,0,"
+                               f"IF(SUM(${p_cols[0]}{r}:{p_cols[j]}{r})=0,0,{r_cols[j - 1]}{r}+1))"))
+                ws.cell(row=r, column=blocks["G"] + j,
+                        value=f"=IF({p_cols[j]}{r}=1,{r_cols[j - 1]}{r},0)")
+            # T: 자기가 낀 팀 2칸 중 자기 아닌 쪽 (코트별 팀1·팀2 전부 검사)
+            expr = '""'
+            for ci in range(len(grid["courts"]) - 1, -1, -1):
+                base = grid["courts_col_start"] + ci * grid["cols_per_court"]
+                for a, b in ((base + 3, base + 4), (base, base + 1)):
+                    for x, y in ((b, a), (a, b)):
+                        expr = (f"IF($A{r}='{GRID_SHEET}'!${L(x)}${nr},"
+                                f"'{GRID_SHEET}'!${L(y)}${nr},{expr})")
+            ws.cell(row=r, column=blocks["T"] + j, value="=" + expr)
+
+        p_rng = f"{p_cols[0]}{r}:{p_cols[-1]}{r}"
+        times1 = f"${p_cols[0]}$1:${p_cols[-1]}$1"
+        times2 = f"${p_cols[0]}$2:${p_cols[-1]}$2"
+        ws.cell(row=r, column=col_first,
+                value=f"=IF(SUM({p_rng})=0,-1,INDEX({times1},MATCH(1,{p_rng},0)))")
+        ws.cell(row=r, column=col_last,
+                value=f"=IF(SUM({p_rng})=0,-1,LOOKUP(2,1/({p_rng}=1),{times2}))")
+
+        refs.append(dict(
+            p_rng=f"'{CALC_SHEET}'!{p_rng}",
+            s_rng=f"'{CALC_SHEET}'!{s_cols[0]}{r}:{s_cols[-1]}{r}",
+            g_rng=f"'{CALC_SHEET}'!{g_cols[0]}{r}:{g_cols[-1]}{r}",
+            t_rng=f"'{CALC_SHEET}'!{t_cols[0]}{r}:{t_cols[-1]}{r}",
+            first=f"'{CALC_SHEET}'!${L(col_first)}${r}",
+            last=f"'{CALC_SHEET}'!${L(col_last)}${r}",
+            eff=f"'{CALC_SHEET}'!$B${r}",
+        ))
+    last_end_rng = f"'{CALC_SHEET}'!${L(col_last)}$4:${L(col_last)}${3 + len(ordered)}"
+    return refs, last_end_rng
 
 
-def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list) -> None:
-    """'통계' 시트: 사람별 통계 테이블 + 전체 요약."""
-    matches = bracket["matches"]
+def _mixed_count_formula(grid: dict, name_cell: str) -> str:
+    """이 사람의 혼복 게임수: 팀 사이 칸이 "혼"인 행에 이름이 있는 횟수 (코트별 합)."""
+    L = get_column_letter
+    r0, r1 = grid["data_start_row"], grid["last_grid_row"]
+    terms = []
+    for ci in range(len(grid["courts"])):
+        base = grid["courts_col_start"] + ci * grid["cols_per_court"]
+        rng = lambda c: f"'{GRID_SHEET}'!${L(c)}${r0}:${L(c)}${r1}"
+        eq = "+".join(f"({rng(c)}={name_cell})" for c in (base, base + 1, base + 3, base + 4))
+        terms.append(f'SUMPRODUCT(({eq})*({rng(base + 2)}="혼"))')
+    return "=" + "+".join(terms)
+
+
+def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list, grid: dict) -> None:
+    """'통계' 시트: 사람별 통계 테이블 + 전체 요약 — 전부 수식 기반(손 수정 시 자동 재계산)."""
     player_stats = bracket["player_stats"]
-    per = _collect_person_stats(player_stats, matches)
 
     ws = wb.create_sheet("통계")
 
@@ -117,7 +180,8 @@ def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list
     for i, (_, w) in enumerate(cols, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    ws.cell(row=1, column=1, value="사람별 통계 — 생성 시점 기준 (대진표 시트를 손으로 고쳐도 자동 갱신되지 않음)")
+    ws.cell(row=1, column=1, value="사람별 통계 — 수식 기반: 대진표 시트 '성함' 칸을 고치면 자동 재계산됩니다"
+                                   " (혼복 판정은 팀 사이 칸의 \"혼\" 표기 기준 · 계산 상세는 숨김 시트 '통계_계산')")
     ws.cell(row=1, column=1).font = FONT_SMALL
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(cols))
 
@@ -141,9 +205,20 @@ def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list
     else:
         ordered = sorted(player_stats, key=lambda s: -s["available_slots"])
 
+    # 숨김 계산 시트: 대진표를 읽는 사람×슬롯 매트릭스 (통계 수식들의 근거)
+    refs, last_end_rng = _build_calc_sheet(wb, ordered, grid, HEADER_ROW)
+
+    L = get_column_letter
+    col = {title: i for i, (title, _) in enumerate(cols, start=1)}  # 헤더 제목 → 컬럼 번호
+
     for idx, s in enumerate(ordered):
-        p = per[s["id"]]
-        played = bool(p["slots"])
+        r = HEADER_ROW + 1 + idx
+        ref = refs[idx]
+        g_cell = f"{L(col['게임수'])}{r}"
+        x_cell = f"{L(col['혼복'])}{r}"
+        gen_cell = f"{L(col['성별'])}{r}"
+        pn_cell = f"{L(col['파트너 수'])}{r}"
+        wait_expr = f"MAX(0,{ref['first']}-{ref['eff']})"
         row_vals = [idx + 1, display_name(s)]
         if is_exchange:
             row_vals.append(s.get("club", ""))
@@ -151,53 +226,65 @@ def _build_stats_sheet(wb, bracket: dict, is_exchange: bool, clubs_ordered: list
             "남" if s["gender"] == "M" else "여",
             s["exp"],
             f"{min_to_hhmm(s['in_min'])}~{min_to_hhmm(s['out_min'])}",
-            s["games"],
-            p["types"]["M"], p["types"]["F"], p["types"]["X"],
-            min_to_hhmm(p["slots"][0]) if played else "-",
-            min_to_hhmm(p["slots"][-1] + 30) if played else "-",
-            p["start_delay"] if played else "-",
-            p["max_streak"],
-            p["max_rest"] if len(p["slots"]) >= 2 else "-",
-            p["long_gaps"],
-            p["total_idle"] if played else "-",
-            p["partner_n"],
-            p["partner_rep"],
+            f"=SUM({ref['p_rng']})",
+            f'=IF({gen_cell}="남",{g_cell}-{x_cell},0)',
+            f'=IF({gen_cell}="여",{g_cell}-{x_cell},0)',
+            _mixed_count_formula(grid, f"$B{r}"),
+            f'=IF({g_cell}=0,"-",TEXT({ref["first"]}/1440,"HH:MM"))',
+            f'=IF({g_cell}=0,"-",TEXT({ref["last"]}/1440,"HH:MM"))',
+            f'=IF({g_cell}=0,"-",{wait_expr})',
+            f"=MAX({ref['s_rng']})",
+            f'=IF({g_cell}<2,"-",MAX({ref["g_rng"]})*30)',
+            f'=COUNTIF({ref["g_rng"]},">=2")',
+            f'=IF({g_cell}=0,"-",{wait_expr}+SUM({ref["g_rng"]})*30)',
+            f'=IF({g_cell}=0,0,SUMPRODUCT(({ref["t_rng"]}<>"")/COUNTIF({ref["t_rng"]},{ref["t_rng"]}&"")))',
+            f'=IF({g_cell}=0,0,SUMPRODUCT(({ref["t_rng"]}<>"")*1)-{pn_cell})',
         ]
-        r = HEADER_ROW + 1 + idx
         for ci, v in enumerate(row_vals, start=1):
             cell = ws.cell(row=r, column=ci, value=v)
             cell.font = FONT_STAT
             cell.alignment = CENTER
             cell.border = BORDER
-        # 눈에 띄어야 하는 값: 1시간 이상 휴식 / 1시간+ 공백 발생
-        off = 1 if is_exchange else 0
-        if isinstance(row_vals[13 + off], int) and row_vals[13 + off] >= 60:
-            ws.cell(row=r, column=14 + off).font = FONT_STAT_WARN
-        if row_vals[14 + off]:
-            ws.cell(row=r, column=15 + off).font = FONT_STAT_WARN
         if s["membership"] == "게스트":
             ws.cell(row=r, column=2).font = Font(name="맑은 고딕", size=10, italic=True)
 
+    # 눈에 띄어야 하는 값(값이 수식이라 조건부 서식으로): 1시간 이상 휴식 / 1시간+ 공백 발생
+    first_data = HEADER_ROW + 1
+    last_data = HEADER_ROW + len(ordered)
+    rest_l = L(col["최대 연속 휴식(분)"])
+    lg_l = L(col["1시간+ 공백(회)"])
+    warn_font = Font(name="맑은 고딕", size=10, bold=True, color="C00000")
+    if ordered:
+        ws.conditional_formatting.add(
+            f"{rest_l}{first_data}:{rest_l}{last_data}",
+            FormulaRule(formula=[f"AND(ISNUMBER({rest_l}{first_data}),{rest_l}{first_data}>=60)"],
+                        font=warn_font))
+        ws.conditional_formatting.add(
+            f"{lg_l}{first_data}:{lg_l}{last_data}",
+            CellIsRule(operator="greaterThan", formula=["0"], font=warn_font))
+
     ws.freeze_panes = f"A{HEADER_ROW + 1}"
 
-    # ── 전체 요약 ──
+    # ── 전체 요약 (역시 수식 — 손 수정 시 자동 재계산) ──
     base = HEADER_ROW + len(ordered) + 2
-    games = [s["games"] for s in player_stats]
-    total_idle_all = sum(per[s["id"]]["total_idle"] for s in player_stats if per[s["id"]]["slots"])
-    long_gap_total = sum(per[s["id"]]["long_gaps"] for s in player_stats)
-    long_gap_people = sum(1 for s in player_stats if per[s["id"]]["long_gaps"])
-    finish_all = max((per[s["id"]]["slots"][-1] + 30 for s in player_stats if per[s["id"]]["slots"]),
-                     default=None)
-    tc = bracket.get("type_count", {})
+
+    def col_rng(title):
+        cl = L(col[title])
+        return f"{cl}{first_data}:{cl}{last_data}"
+
+    g_rng, m_rng, f_rng, x_rng = (col_rng(t) for t in ("게임수", "남복", "여복", "혼복"))
+    lg_rng, ti_rng = col_rng("1시간+ 공백(회)"), col_rng("총 대기(분)")
     rows = [
         ("전체 요약", ""),
-        ("총 매치 수", f"{len(matches)}  (남복 {tc.get('M', 0)} · 여복 {tc.get('F', 0)} · 혼복 {tc.get('X', 0)})"),
+        ("총 매치 수", f'=ROUND(SUM({g_rng})/4,2)&"  (남복 "&ROUND(SUM({m_rng})/4,2)'
+                      f'&" · 여복 "&ROUND(SUM({f_rng})/4,2)&" · 혼복 "&ROUND(SUM({x_rng})/4,2)&")"'),
         ("참가자 수", len(player_stats)),
         ("게임수 평균 / 최대 / 최소",
-         f"{round(sum(games) / max(1, len(games)), 2)} / {max(games, default=0)} / {min(games, default=0)}"),
-        ("1시간 이상 공백", f"{long_gap_total}건 / {long_gap_people}명"),
-        ("총 대기시간 합계", f"{total_idle_all}분"),
-        ("마지막 경기 종료", min_to_hhmm(finish_all) if finish_all else "-"),
+         f'=ROUND(AVERAGE({g_rng}),2)&" / "&MAX({g_rng})&" / "&MIN({g_rng})'),
+        ("1시간 이상 공백", f'=SUM({lg_rng})&"건 / "&COUNTIF({lg_rng},">0")&"명"'),
+        ("총 대기시간 합계", f'=SUM({ti_rng})&"분"'),
+        ("마지막 경기 종료",
+         f'=IF(MAX({last_end_rng})<=0,"-",TEXT(MAX({last_end_rng})/1440,"HH:MM"))'),
     ]
     if is_exchange:
         club_counts = defaultdict(int)
@@ -475,8 +562,17 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
     ws.print_options.horizontalCentered = True
     ws.page_setup.orientation = "landscape"
 
-    # 두 번째 시트: 사람별 통계 + 전체 요약
-    _build_stats_sheet(wb, bracket, is_exchange, clubs_ordered)
+    # 두 번째 시트: 사람별 통계 + 전체 요약 (수식 기반) — 대진표 그리드 좌표를 넘긴다
+    grid = dict(
+        data_start_row=data_start_row,
+        last_grid_row=last_grid_row,
+        courts_col_start=COURTS_COL_START,
+        courts_col_end=courts_col_end,
+        cols_per_court=cols_per_court,
+        schedule_slots=schedule_slots,
+        courts=courts,
+    )
+    _build_stats_sheet(wb, bracket, is_exchange, clubs_ordered, grid)
 
     wb.save(out_path)
 
