@@ -13,7 +13,8 @@
 - 게스트 구력: 'N년' 또는 '금배'(=20년). 성별은 명단에 없으므로 비워 두고 경고 —
   워크플로우에서 Claude가 이름으로 추정해 채우거나 사용자가 초안에서 수정.
 - IN/OUT: 사전채움 로스터의 개인별 평소 시간. 없는 사람은 코트 운영 전체 시간.
-- 최소/최대게임수: 사전채움 로스터 값 승계. 게스트는 기본 최대 4게임(--guest-max로 변경).
+- 최소/최대게임수: 사전채움 로스터 값 승계. 게스트는 게임수 제약 없음 —
+  --guest-max N을 명시할 때만 최대게임수를 채운다(26.8.6 사용자 확인: 기본 제약은 요청된 적 없음).
 - 명단에 없는 참석자(탈퇴자 등)는 초안에서 제외하고 경고로 표시.
 - 기존 출력 파일은 입력/…_백업_<날짜>.xlsx 로 백업 후 덮어씀(--no-backup으로 끔).
 """
@@ -73,7 +74,7 @@ def parse_schedule_text(text: str) -> dict:
 
 
 def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
-                guest_max: int | None = 4, backup: bool = True,
+                guest_max: int | None = None, backup: bool = True,
                 guest_genders: dict | None = None) -> dict:
     """일정 텍스트 → 입력 엑셀 초안. 요약 dict 반환."""
     parsed = parse_schedule_text(snapshot_text)
@@ -163,7 +164,7 @@ def main():
     ap.add_argument("--snapshot", required=True, help="일정 텍스트 파일 (browse snapshot 출력 또는 복사 텍스트)")
     ap.add_argument("--members", default="", help="멤버 설정 엑셀 (생략 시 내장 기본값)")
     ap.add_argument("--out", default="", help="초안 출력 경로 (기본: 입력/테니스_입력양식.xlsx)")
-    ap.add_argument("--guest-max", type=int, default=4, help="게스트 기본 최대게임수 (0=없음)")
+    ap.add_argument("--guest-max", type=int, default=0, help="게스트 최대게임수 (기본 0=제약 없음)")
     ap.add_argument("--guest-gender", action="append", default=[],
                     help="게스트 성별 지정: 이름=남|여 (반복 가능)")
     ap.add_argument("--no-backup", action="store_true")

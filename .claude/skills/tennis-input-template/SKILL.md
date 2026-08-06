@@ -54,7 +54,7 @@ description: 테니스 대진표 입력용 빈 엑셀 템플릿을 생성하고,
 카카오 일정 텍스트(참석/불참 목록 + 설명란 게스트) → 입력 엑셀 초안. 오케스트레이터 Phase C가 사용.
 ```powershell
 python build_draft.py --snapshot <일정텍스트.txt> --members 입력/클럽멤버_설정.xlsx `
-  [--guest-gender "이름=남|여"] [--guest-max 4] [--out 입력/테니스_입력양식.xlsx]
+  [--guest-gender "이름=남|여"] [--guest-max N(기본 0=제약 없음)] [--out 입력/테니스_입력양식.xlsx]
 ```
 - 카톡아이디→실명(이모지·공백 무시), 성별·구력=멤버 설정, IN/OUT·최소/최대=사전채움 승계
 - 게스트: 'N년' 또는 등급 호칭(금배=20년·은배=15년·동배=10년, `RANK_EXP`) 구력 파싱, 기본 최대 4게임, 성별은 옵션으로 지정
