@@ -16,7 +16,7 @@ THRESHOLDS = dict(
     game_gap_global=4,
     game_gap_group=2,
     pair_dup_rate=0.05,
-    three_consec_per_player=2,
+    three_consec_per_player=0,  # 3연속 출전은 하드 금지 — 1건이라도 나오면 RETRY (알고리즘 버그)
     team_skill_avg=3.0,
     team_skill_max=7,
     mixed_skill_violations=0,
@@ -33,6 +33,22 @@ def min_to_hhmm(v: int) -> str:
 
 def pair_key(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a < b else (b, a)
+
+
+def max_games_no3(slots: list) -> int:
+    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수 (schedule.py와 동일 기준)."""
+    b0, b1, b2 = 0, None, None
+    prev = None
+    for s in sorted(slots):
+        adj = prev is not None and s - prev == 30
+        rest_best = max(x for x in (b0, b1, b2) if x is not None)
+        if adj:
+            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
+        else:
+            n1, n2 = rest_best + 1, None
+        b0, b1, b2 = rest_best, n1, n2
+        prev = s
+    return max(x for x in (b0, b1, b2) if x is not None)
 
 
 def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
@@ -101,13 +117,15 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
             })
     scores["max_games_violations"] = max_games_violations
 
-    # 최소게임수 보장 — 가용 슬롯 한도로 자른 값 기준. 미달이면 RETRY.
+    # 최소게임수 보장 — '3연속 금지를 지키며 뛸 수 있는 최대 게임수' 한도로 자른 값 기준
+    # (schedule.eff_min_games와 동일). 미달이면 RETRY.
     min_games_violations = []
     for s in player_stats:
         mg = s.get("min_games")
         if not mg:
             continue
-        eff = min(mg, s["available_slots"])
+        cap = max_games_no3(players_by_id.get(s["id"], {}).get("available_slots") or [])
+        eff = min(mg, cap)
         if s["games"] < eff:
             min_games_violations.append(s["name"])
             issues.append({
@@ -115,11 +133,11 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                 "code": "min_games_violation",
                 "msg": f"{s['name']}: 최소게임수 {mg} 미달 — 실제 {s['games']}게임 배정됨 (보장 {eff}게임)",
             })
-        if mg > s["available_slots"]:
+        if mg > cap:
             issues.append({
                 "severity": "low",
                 "code": "min_games_capped",
-                "msg": f"{s['name']}: 최소게임수 {mg} > 가용 슬롯 {s['available_slots']}개 — {eff}게임까지만 보장 (입력 구조상 한계)",
+                "msg": f"{s['name']}: 최소게임수 {mg} > 3연속 없이 가능한 최대 {cap}게임 — {eff}게임까지만 보장 (입력 구조상 한계)",
             })
     scores["min_games_violations"] = min_games_violations
 
@@ -220,9 +238,9 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                 three_consec += 1
                 three_consec_per_player[s["name"]] += 1
                 issues.append({
-                    "severity": "medium",
+                    "severity": "high",
                     "code": "three_consec",
-                    "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)})",
+                    "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — 금지 규칙 위반 (알고리즘 버그)",
                 })
             elif i >= 1 and slots[i - 1] == slots[i] - 30:
                 two_consec += 1

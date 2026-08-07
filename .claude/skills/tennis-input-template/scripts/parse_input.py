@@ -147,6 +147,25 @@ def hhmm_to_min(s: str) -> int:
     return h * 60 + m
 
 
+def _max_games_no3(slots: list) -> int:
+    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수 (schedule.py와 동일 기준).
+
+    예: 연속한 6슬롯이면 6게임이 아니라 4게임(2뛰고 1쉬는 패턴)이 최대다.
+    """
+    b0, b1, b2 = 0, None, None
+    prev = None
+    for s in sorted(slots):
+        adj = prev is not None and s - prev == 30
+        rest_best = max(x for x in (b0, b1, b2) if x is not None)
+        if adj:
+            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
+        else:
+            n1, n2 = rest_best + 1, None
+        b0, b1, b2 = rest_best, n1, n2
+        prev = s
+    return max(x for x in (b0, b1, b2) if x is not None)
+
+
 def min_to_hhmm(v: int) -> str:
     return f"{v // 60:02d}:{v % 60:02d}"
 
@@ -390,15 +409,16 @@ def main():
             warnings.append(f"'{p['name']}': 가용 슬롯 없음 — 코트 운영 시간과 IN/OUT 범위 확인 필요")
         if p["max_games"] is not None and p["max_games"] > len(p["available_slots"]):
             warnings.append(f"'{p['name']}': 최대게임수({p['max_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 한도로 자연 제한됨")
-        if p.get("min_games") and p["min_games"] > len(p["available_slots"]):
-            warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 수까지만 보장됨")
+        if p.get("min_games") and p["min_games"] > _max_games_no3(p["available_slots"]):
+            cap = _max_games_no3(p["available_slots"])
+            warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > 3연속 없이 가능한 최대({cap}게임) — {cap}게임까지만 보장됨")
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0
     for sl in schedule_slots:
         n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
         total_seats += min(len(sl["courts"]), n_avail // 4) * 4
-    min_sum = sum(min(p["min_games"], len(p["available_slots"])) for p in players if p.get("min_games"))
+    min_sum = sum(min(p["min_games"], _max_games_no3(p["available_slots"])) for p in players if p.get("min_games"))
     if min_sum > total_seats:
         warnings.append(f"최소게임수 합계({min_sum})가 전체 배정 가능 자리({total_seats})를 넘습니다 — 일부는 보장 못 할 수 있음")
 

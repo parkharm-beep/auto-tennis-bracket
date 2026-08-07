@@ -12,6 +12,7 @@ import math
 import os
 import random
 import sys
+from functools import lru_cache
 
 # ---------------------------------------------------------------------------
 # W: 그리디 후보 선택용 가중치 (한 경기를 고를 때의 비용)
@@ -82,7 +83,10 @@ G = dict(
                                 # 가볍게만 문다 (혼복 1판 mixed_match=20과 비슷한 급).
     matchup_repeat=220.0,       # 같은 4명이 상대편까지 그대로 재대결 — 혼복 1~2판보다 나쁘다고 본다
     history_pair=30.0,
-    three_streak=400.0,
+    three_streak=100000.0,      # 3연속 출전 금지(하드) — "2게임 연속했으면 반드시 쉰다".
+                                # 그리디는 애초에 안 만들고(safe_pool·하드 필터, 예외 없음),
+                                # 로컬 개선(선수 교환·경기 이동·kick)도 이 비용 때문에 절대 못 만든다.
+                                # 공백 해소(long_gap)·최소게임수(min_games_short)와도 안 바꾼다.
     two_streak=2.0,
     mixed_match=20.0,           # 허용량 이내의 혼복 1경기당 페널티
     mixed_over_quota=220.0,     # 허용량을 넘는 혼복 (초과 경기수)^2 — 사실상 상한
@@ -142,25 +146,52 @@ def skill_tol(*people) -> int:
     return SKILL_TOL_HIGH if any(p["exp"] >= HIGH_EXP for p in people) else SKILL_TOL_LOW
 
 
+@lru_cache(maxsize=None)
+def max_games_no3(slots: tuple) -> int:
+    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수.
+
+    예: 연속한 6슬롯이면 6게임이 아니라 4게임(2뛰고 1쉬는 패턴)이 최대다.
+    최소게임수 보장 한도와 '지금 안 태우면 보장이 깨지는가' 판정의 공통 기준.
+    """
+    b0, b1, b2 = 0, None, None   # 쉼(연속 0) / 1연속째 / 2연속째 상태의 최고 게임수
+    prev = None
+    for s in sorted(slots):
+        adj = prev is not None and s - prev == 30
+        rest_best = max(x for x in (b0, b1, b2) if x is not None)
+        if adj:
+            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
+        else:
+            n1, n2 = rest_best + 1, None
+        b0, b1, b2 = rest_best, n1, n2
+        prev = s
+    return max(x for x in (b0, b1, b2) if x is not None)
+
+
 def eff_min_games(p: dict) -> int:
     """이 사람에게 실제로 보장해야 하는 최소 게임수.
 
-    입력의 '최소게임수'를 본인 가용 슬롯 수(그 이상은 물리적으로 불가)로 자른 값.
-    최소게임수를 안 적었으면 0.
+    입력의 '최소게임수'를 '3연속 출전 금지를 지키며 가용 시간 안에 뛸 수 있는
+    최대 게임수'(max_games_no3)로 자른 값. 최소게임수를 안 적었으면 0.
+    (가용 슬롯 수로만 자르면 붙어 있는 슬롯에서 3연속을 강요하게 된다)
     """
     mg = p.get("min_games")
     if not mg:
         return 0
-    return min(mg, len(p.get("available_slots") or []))
+    return min(mg, max_games_no3(tuple(p.get("available_slots") or ())))
 
 
 def min_games_critical(p: dict, slot_start: int, state: dict) -> bool:
-    """이 슬롯을 놓치면 최소게임수 보장이 깨지는 상태인가 (남은 가용 슬롯 ≤ 부족분)."""
+    """이 슬롯을 놓치면 최소게임수 보장이 깨지는 상태인가.
+
+    '남은 자리'는 단순 슬롯 수가 아니라 이후 슬롯에서 3연속 금지를 지키며
+    뛸 수 있는 최대 게임수로 센다 — 남은 슬롯이 붙어 있으면 다 뛸 수 없으므로
+    예전 계산보다 일찍 발동해, 3연속 없이도 보장을 지킬 수 있게 미리 태운다.
+    """
     deficit = eff_min_games(p) - state["player_games"][p["id"]]
     if deficit <= 0:
         return False
-    remaining = sum(1 for s in (p.get("available_slots") or []) if s >= slot_start)
-    return remaining <= deficit
+    later = tuple(s for s in (p.get("available_slots") or ()) if s > slot_start)
+    return max_games_no3(later) < deficit
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -510,13 +541,12 @@ def match_cost(
                 urgency *= 0.35
             cost -= urgency
 
-        # 최소게임수 미달자는 우대 투입. 남은 가용 슬롯이 부족분만큼밖에 없으면
-        # 이 슬롯을 놓치는 순간 보장이 깨지므로 사실상 강제로 태운다.
+        # 최소게임수 미달자는 우대 투입. 이 슬롯을 놓치면 (3연속 금지를 지키면서는)
+        # 보장을 더는 못 채우는 상태면 사실상 강제로 태운다.
         deficit = eff_min_games(p) - played
         if deficit > 0:
             cost -= W["min_games_deficit"] * deficit
-            remaining = sum(1 for s in (p.get("available_slots") or []) if s >= slot_start)
-            if remaining <= deficit:
+            if min_games_critical(p, slot_start, state):
                 cost -= W["min_games_critical"]
 
     if match_type == "F" and state.get("multi_club"):
@@ -582,16 +612,12 @@ def enumerate_candidates(
     top_k: int = 10,
     court_name: str = "",
 ) -> list[tuple[float, str, tuple, tuple]]:
-    # 3연속 위험자 분리. 풀이 충분하면 안전 풀만 사용.
-    # (최소게임수 보장이 위태로운 사람은 3연속이라도 안전 풀에 남긴다)
-    safe_pool = [p for p in pool
-                 if not is_three_streak(p["id"], slot_start, state)
-                 or min_games_critical(p, slot_start, state)]
-    if len(safe_pool) >= 4:
-        working_pool = safe_pool
-    else:
-        risky = [p for p in pool if is_three_streak(p["id"], slot_start, state)]
-        working_pool = safe_pool + risky
+    # 3연속 출전은 하드 금지 — 2게임 연속했으면 반드시 쉰다. 예외 없음.
+    # (최소게임수 보장은 min_games_critical이 3연속 금지를 반영해 더 일찍
+    #  발동하므로, 3연속을 허용하는 대신 미리 태우는 쪽으로 지킨다)
+    working_pool = [p for p in pool if not is_three_streak(p["id"], slot_start, state)]
+    if len(working_pool) < 4:
+        return []   # 3연속 없이 코트를 채울 수 없으면 이 코트는 비운다
 
     eff_in = state.get("eff_in", {})
 
@@ -829,28 +855,16 @@ def _hard_filter(
     cands: list[tuple],
     slot_start: int,
     state: dict,
-    pool_size: int,
 ) -> list[tuple]:
-    def _streak_blocked(p):
-        """3연속 출전으로 걸러야 하는 선수인가.
+    """3연속 출전이 생기는 후보를 무조건 제거 — 예외 없는 하드 규칙.
 
-        단, 최소게임수 보장이 위태로운 사람은 예외 — 지금 안 태우면 보장이
-        깨지므로 3연속이라도 태운다.
-        """
-        return (is_three_streak(p["id"], slot_start, state)
-                and not min_games_critical(p, slot_start, state))
-
-    filtered = []
-    for entry in cands:
-        cost, mtype, t1, t2 = entry
-        all_players = list(t1) + list(t2)
-
-        if pool_size >= 8:
-            if any(_streak_blocked(p) for p in all_players):
-                continue
-
-        filtered.append(entry)
-    return filtered
+    (enumerate_candidates가 안전 풀만 쓰므로 평소엔 통과만 하는 이중 안전장치)
+    """
+    return [
+        entry for entry in cands
+        if not any(is_three_streak(p["id"], slot_start, state)
+                   for p in list(entry[2]) + list(entry[3]))
+    ]
 
 
 def pick_match(
@@ -864,8 +878,10 @@ def pick_match(
     cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court)
     if not cands:
         return None
-    filtered = _hard_filter(cands, slot_start, state, len(pool))
-    cands = filtered if filtered else cands
+    cands = _hard_filter(cands, slot_start, state)
+    if not cands:
+        return None   # 3연속을 만들지 않고는 채울 수 없는 코트 → 공석
+
     cands.sort(key=lambda x: x[0])
     pick_pool = cands[: min(len(cands), candidate_top_n)]
     weights = [1.0 / (1.0 + i) ** 2 for i in range(len(pick_pool))]
