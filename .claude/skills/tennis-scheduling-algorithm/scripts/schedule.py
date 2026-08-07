@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import math
 import os
 import random
 import sys
@@ -33,6 +34,9 @@ W = dict(
                                 # 같은주 중복페어 유효비용(pair_repeat 20 → 첫 중복 40)보다 낮게 둔다:
                                 # 지난주 회피 때문에 이번 주 안에서 같은 짝을 반복하는 자기모순을 막기 위함.
     quad_repeat=95.0,           # 같은 4명이 편만 바꿔 다시 만남 — 이것도 확실히 회피
+    quad_repeat_forced=12.0,    # 단, 그 성별로 만들 '새 4명 조합'이 아예 없을 때(예: 여자 4명)는
+                                # 편을 바꾼 재대결이 유일한 단성 복식이다. 억지로 혼복으로 밀지 않도록
+                                # 가볍게만 억제한다 (혼복 페널티 single_mixed_nonpriority=70보다 훨씬 작게).
     matchup_repeat=90.0,        # 같은 4명이 '상대편까지 그대로' 다시 만남 (강하게)
     mixed_below_min=40.0,       # 최소 보장 판수를 못 채운 동안 혼복 우대 (음수 비용)
     single_mixed_nonpriority=70.0,
@@ -73,6 +77,9 @@ G = dict(
     #   성별 그룹 평균까지 보게 해서 그 쏠림을 깬다.
     pair_dup=55.0,
     quad_repeat=210.0,          # 같은 4명이 편만 바꿔 재대결 — 그럴 바엔 혼복이 낫다
+    quad_repeat_forced=25.0,    # 단, 그 성별의 4명 조합을 이미 다 써버렸다면(예: 여자 4명 → 조합 1개)
+                                # 재대결은 구조적으로 불가피하다. 이때 여복을 막으면 혼복만 남으므로
+                                # 가볍게만 문다 (혼복 1판 mixed_match=20과 비슷한 급).
     matchup_repeat=220.0,       # 같은 4명이 상대편까지 그대로 재대결 — 혼복 1~2판보다 나쁘다고 본다
     history_pair=30.0,
     three_streak=400.0,
@@ -344,6 +351,8 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         bal_members.setdefault(bkey(p), []).append(p["id"])
     mixed_min, mixed_max = mixed_limits(players, schedule_slots, multi)
     couple_pref, couple_list = build_couples(players, couples)
+    n_m_total = sum(1 for p in players if p["gender"] == "M")
+    n_f_total = len(players) - n_m_total
     return {
         # 부부 페어: 혼복 같은 팀 회피(피함)/우대(원함) + 종료 시각 맞추기용
         "couple_pref": couple_pref,
@@ -369,6 +378,10 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         # 혼복 판수의 하한/상한. 교류전도 같은 규칙(팀은 같은 클럽 남1+여1이 되는지까지 확인).
         "mixed_min": mixed_min,
         "mixed_quota": mixed_max,
+        # 성별별로 만들 수 있는 서로 다른 4명 조합 수. 이만큼 다 쓰고 나면
+        # 그 성별의 단성 복식 재대결은 구조적으로 불가피하다(여자 4명 → 1).
+        "quad_alt": {g: math.comb(n, 4) if n >= 4 else 0
+                     for g, n in (("M", n_m_total), ("F", n_f_total))},
     }
 
 
@@ -413,6 +426,7 @@ def match_cost(
     pool_females_count: int,
     court_name: str = "",
     mixed_is_fallback: bool = False,
+    quad_forced: bool = False,
 ) -> float:
     cost = 0.0
     all_players = list(team1) + list(team2)
@@ -433,12 +447,15 @@ def match_cost(
             cost += W["pair_repeat"] * (prev * prev + 1)
 
     # 같은 4명이 또 만나는 것 — 특히 '상대편까지 그대로'인 완전 중복은 강하게 회피.
-    # (여자가 4명뿐이면 여복 4판째에 반드시 발생 → 이때 혼복이 차선책으로 열린다)
+    # 다만 그 성별로 만들 새 4명 조합이 아예 없으면(quad_forced, 예: 여자 4명) 재대결은
+    # 선택이 아니라 구조적 결과다. 이때까지 강하게 물면 여복이 1판에서 끝나고 나머지가
+    # 전부 혼복이 되므로, 편 구성이 다른 재대결은 가볍게만 억제한다.
+    # (편 구성까지 그대로면 아래 matchup_repeat이 그대로 강하게 문다)
     t1_ids = (team1[0]["id"], team1[1]["id"])
     t2_ids = (team2[0]["id"], team2[1]["id"])
     q_prev = state["quad_count"].get(quad_key(t1_ids, t2_ids), 0)
     if q_prev > 0:
-        cost += W["quad_repeat"] * q_prev
+        cost += W["quad_repeat_forced" if quad_forced else "quad_repeat"] * q_prev
     m_prev = state["matchup_count"].get(matchup_key(t1_ids, t2_ids), 0)
     if m_prev > 0:
         cost += W["matchup_repeat"] * (m_prev * m_prev + 1)
@@ -615,20 +632,27 @@ def enumerate_candidates(
         club_keys = sorted(set(m_by_club) | set(f_by_club))
         # 남녀 어느 한쪽이라도 '중복 없는 단성 복식(같은클럽 팀 vs 다른클럽)'을 못 만들면
         # 혼복을 차선책으로 인정한다.
+        sorted_m = [p for p in pool_sorted if p["gender"] == "M"]
+        sorted_f = [p for p in pool_sorted if p["gender"] == "F"]
         mixed_is_fallback = not (
-            clean_singles_available([p for p in pool_sorted if p["gender"] == "M"], state)
-            and clean_singles_available([p for p in pool_sorted if p["gender"] == "F"], state)
+            clean_singles_available(sorted_m, state)
+            and clean_singles_available(sorted_f, state)
         )
+        # 새 4명 조합이 없으면 재대결은 구조적으로 강제 — quad_repeat을 가볍게 (단일 클럽과 동일)
+        quad_forced_m = not fresh_quad_available(sorted_m, state)
+        quad_forced_f = not fresh_quad_available(sorted_f, state)
         for i in range(len(club_keys)):
             for j in range(i + 1, len(club_keys)):
                 Am, Bm = m_by_club.get(club_keys[i], []), m_by_club.get(club_keys[j], [])
                 Af, Bf = f_by_club.get(club_keys[i], []), f_by_club.get(club_keys[j], [])
                 for pa in itertools.combinations(Am, 2):       # 남복: i클럽 vs j클럽
                     for pb in itertools.combinations(Bm, 2):
-                        candidates.append((match_cost(pa, pb, "M", slot_start, state, pool_m, pool_f, court_name), "M", pa, pb))
+                        candidates.append((match_cost(pa, pb, "M", slot_start, state, pool_m, pool_f, court_name,
+                                                      quad_forced=quad_forced_m), "M", pa, pb))
                 for pa in itertools.combinations(Af, 2):       # 여복
                     for pb in itertools.combinations(Bf, 2):
-                        candidates.append((match_cost(pa, pb, "F", slot_start, state, pool_m, pool_f, court_name), "F", pa, pb))
+                        candidates.append((match_cost(pa, pb, "F", slot_start, state, pool_m, pool_f, court_name,
+                                                      quad_forced=quad_forced_f), "F", pa, pb))
                 for am in Am:                                  # 혼복: (남1+여1) vs (남1+여1)
                     for af in Af:
                         t1 = (am, af)
@@ -658,6 +682,11 @@ def enumerate_candidates(
     mixed_m = males[:MIXED_TOP]
     mixed_f = females[:MIXED_TOP]
 
+    # 이 성별로 '아직 안 붙어본 4명 조합'이 남아있는가 — 없으면 재대결은 구조적으로 강제된다
+    # (예: 여자 4명 → 조합이 하나뿐). 그때는 quad_repeat을 가볍게 물어 여복이 끊기지 않게 한다.
+    quad_forced_m = not fresh_quad_available(singles_m, state)
+    quad_forced_f = not fresh_quad_available(singles_f, state)
+
     if len(singles_m) >= 4:
         for combo in itertools.combinations(singles_m, 4):
             splits = [
@@ -666,7 +695,8 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
-                c = match_cost(t1, t2, "M", slot_start, state, pool_m, pool_f, court_name)
+                c = match_cost(t1, t2, "M", slot_start, state, pool_m, pool_f, court_name,
+                               quad_forced=quad_forced_m)
                 candidates.append((c, "M", t1, t2))
 
     if len(singles_f) >= 4:
@@ -677,7 +707,8 @@ def enumerate_candidates(
                 ((combo[0], combo[3]), (combo[1], combo[2])),
             ]
             for t1, t2 in splits:
-                c = match_cost(t1, t2, "F", slot_start, state, pool_m, pool_f, court_name)
+                c = match_cost(t1, t2, "F", slot_start, state, pool_m, pool_f, court_name,
+                               quad_forced=quad_forced_f)
                 candidates.append((c, "F", t1, t2))
 
     if len(mixed_m) >= 2 and len(mixed_f) >= 2:
@@ -707,21 +738,28 @@ SPLITS_OF_4 = (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2)))
 def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: int = 8) -> bool:
     """이 성별만으로 '쓸 만한' 단성 복식을 아직 만들 수 있는가.
 
-    쓸 만하다 = ① 같은 짝이 처음이고 ② 같은 4명이 다시 만나는 것도 아니고
+    쓸 만하다 = ① 같은 짝이 처음이고 ② 같은 편 구성으로 다시 붙는 것도 아니고
               ③ 두 팀 구력합 차이가 허용치 이내(전원 10년 미만이면 3, 10년 이상 포함이면 4).
 
-    False면 지금 단성 복식을 짜봐야 짝이 겹치거나, 같은 사람들끼리 또 붙거나,
+    같은 4명이 다시 만나는 것(quad)은 **새 4명 조합을 만들 수 있는 동안에만** 배제한다.
+    여자가 4명뿐이면 조합이 하나뿐이라 여기서 잘라버리면 여복이 1판에서 끝나는데,
+    편을 바꾸면 3판까지 짝도 상대 구성도 겹치지 않는다
+    (편 가르기 3가지가 6개 짝을 한 번씩 나눠 쓴다). 그동안은 여복이 여전히 '쓸 만한' 선택지다.
+
+    False면 지금 단성 복식을 짜봐야 짝이 겹치거나, 같은 대진이 또 나오거나,
     구력이 안 맞는 재미없는 경기가 된다는 뜻 → 혼복이 정당한 차선책이 된다.
-    (여자가 4명뿐이면 편 가르는 방법이 3가지뿐이라 금방 False가 된다)
     """
     people = same_gender_pool[:limit]
     if len(people) < 4:
         return False
     pc, mc, qc = state["pair_count"], state["matchup_count"], state["quad_count"]
     multi = bool(state.get("multi_club"))
+    forced_ok = False       # 새 4명 조합은 없지만, 편을 바꾸면 아직 쓸 만한 경우
     for combo in itertools.combinations(people, 4):
-        if qc.get(quad_key((combo[0]["id"], combo[1]["id"]), (combo[2]["id"], combo[3]["id"]))):
-            continue                                # 이 4명은 이미 한 번 붙었다
+        fresh_quad = not qc.get(
+            quad_key((combo[0]["id"], combo[1]["id"]), (combo[2]["id"], combo[3]["id"])))
+        if forced_ok and not fresh_quad:
+            continue                                # 이미 같은 결론 — 더 볼 것 없다
         for (i, j), (k, l) in SPLITS_OF_4:
             p1, p2, p3, p4 = combo[i], combo[j], combo[k], combo[l]
             if multi:
@@ -736,6 +774,26 @@ def clean_singles_available(same_gender_pool: list[dict], state: dict, limit: in
                 continue
             if mc.get(matchup_key(t1, t2)):
                 continue
+            if fresh_quad:
+                return True                         # 처음 붙는 4명 — 최선
+            forced_ok = True                        # 재대결이지만 짝·편 구성은 새롭다
+            break
+    return forced_ok
+
+
+def fresh_quad_available(same_gender_pool: list[dict], state: dict, limit: int = 8) -> bool:
+    """이 성별 풀에 '아직 한 번도 안 붙어본 4명 조합'이 남아있는가.
+
+    False면 이 성별의 단성 복식은 무조건 재대결이 된다(예: 여자 4명 → 조합 1개).
+    그때의 재대결은 선택이 아니라 구조적 결과이므로 quad_repeat을 가볍게 문다.
+    """
+    people = same_gender_pool[:limit]
+    if len(people) < 4:
+        return False
+    qc = state["quad_count"]
+    for combo in itertools.combinations(people, 4):
+        if not qc.get(quad_key((combo[0]["id"], combo[1]["id"]),
+                               (combo[2]["id"], combo[3]["id"]))):
             return True
     return False
 
@@ -920,8 +978,31 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
     return cost
 
 
-def _quad_cost(count: int) -> float:
-    return G["quad_repeat"] * (count - 1) if count > 1 else 0.0
+def _quad_cost(count: int, forced: bool = False) -> float:
+    if count <= 1:
+        return 0.0
+    return G["quad_repeat_forced" if forced else "quad_repeat"] * (count - 1)
+
+
+def _quad_gender(key, players_by_id: dict):
+    """이 4명이 모두 같은 성별이면 그 성별('M'/'F'), 혼복이면 None."""
+    genders = {players_by_id[i]["gender"] for i in key if i in players_by_id}
+    return genders.pop() if len(genders) == 1 else None
+
+
+def quad_forced_gender(state: dict, players_by_id: dict) -> dict:
+    """성별별로 '만들 수 있는 4명 조합을 이미 다 써서 재대결이 불가피한' 상태인가.
+
+    여자 4명이면 조합이 1개뿐이라 첫 여복 직후 True가 된다 → 두 번째 여복부터는
+    quad_repeat을 가볍게 물어(여복이 1판에서 끊겨 나머지가 전부 혼복이 되는 것을 막는다).
+    """
+    quad_alt = state.get("quad_alt") or {}
+    used = {"M": 0, "F": 0}
+    for k in state["quad_count"]:
+        g = _quad_gender(k, players_by_id)
+        if g:
+            used[g] += 1
+    return {g: used[g] >= quad_alt.get(g, 10 ** 6) for g in ("M", "F")}
 
 
 def _matchup_cost(count: int) -> float:
@@ -1024,8 +1105,12 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
         score += pair_entry_cost(c, hist.get(k, 0.0))
 
     # 같은 4명 재대결 (편 구성 무관 / 상대편까지 그대로)
-    for c in state["quad_count"].values():
-        score += _quad_cost(c)
+    # 단성 복식의 재대결은 '그 성별의 4명 조합을 이미 다 써버린' 경우에만 불가피하다.
+    # (여자 4명 → 조합 1개 → 두 번째 여복부터 무조건 재대결. 이때 강하게 물면 여복이 1판에서 끝난다)
+    forced_g = quad_forced_gender(state, players_by_id)
+    for k, c in state["quad_count"].items():
+        g = _quad_gender(k, players_by_id)
+        score += _quad_cost(c, bool(g) and forced_g[g])
     for c in state["matchup_count"].values():
         score += _matchup_cost(c)
 
@@ -1142,6 +1227,8 @@ class Refiner:
             self.pos_groups.setdefault(self._group_key(self.matches[mi][side][idx]), []).append(pos)
         self.qcache = [self.quality(m) for m in self.matches]
         self.tcache = {pid: self.timing(pid, sl) for pid, sl in self.slots_of.items()}
+        # 성별별 '4명 조합 소진' 여부 — 재대결 비용을 full_score와 같은 기준으로 매기기 위함
+        self.quad_forced = quad_forced_gender(self.state, self.pbid)
 
     def _group_key(self, pid):
         p = self.pbid[pid]
@@ -1238,7 +1325,9 @@ class Refiner:
             if not dd:
                 continue
             oc = self.state["quad_count"].get(kk, 0)
-            delta += _quad_cost(oc + dd) - _quad_cost(oc)
+            g = _quad_gender(kk, self.pbid)
+            fc = bool(g) and self.quad_forced.get(g, False)
+            delta += _quad_cost(oc + dd, fc) - _quad_cost(oc, fc)
         for kk, dd in mu_ch.items():
             if not dd:
                 continue
