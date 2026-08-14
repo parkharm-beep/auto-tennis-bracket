@@ -28,7 +28,6 @@ W = dict(
     mixed_skill_rule_violation=1000.0,
     no_member_guest_mix=1.0,
     court_affinity=25.0,
-    female_early_slot=200.0,    # 여성 07:30 이전 슬롯 배정 (1명당) — 사실상 회피
     mixed_nonpriority=120.0,    # 교류전: 단성복식(남복/여복) 우선 — 단, 여복 페어가 반복되면 혼복도 허용
     women_doubles_bonus=200.0,  # 교류전: 여복 우대(우선) — 양 클럽 여자 2+면 여복을 먼저, 다만 절대적이지 않아 혼복도 가능
     history_pair_repeat=30.0,   # 지난주/2주전과 같은 페어 회피(소프트). 우리멤버끼리(단일클럽)일 때만 적용, 교류전 제외.
@@ -56,6 +55,8 @@ W = dict(
                                 # (여자 게스트는 혼복 가능 — 페널티 없음)
                                 # 혼복을 막는 게 아니라 '혼복 남자 자리를 정회원이 맡게' 미는 힘이므로
                                 # single_mixed_nonpriority(70)보다 낮게 둔다.
+    mixed_wish_seat=55.0,       # 혼복희망을 아직 못 채운 사람이 이 혼복에 있음 (1명당, 음수 비용).
+                                # guest_in_mixed(30)보다 크게 둬야 '남자 게스트 희망자'가 밀려나지 않는다.
 )
 
 IDLE_URGENCY_CAP = 4.0          # 유휴 우선 보정 상한(30분 단위) — 2시간 이상은 더 커지지 않음
@@ -99,7 +100,6 @@ G = dict(
     skill_gap_over_tol=40.0,    # 두 팀 구력합 차이가 허용치 초과 (초과분)^2
     mixed_skill_violation=1000.0,
     court_affinity=10.0,
-    female_early=200.0,
     member_guest=1.0,
     gap=4.0,                    # 경기 사이 공백 30분당
     long_gap=200.0,             # 경기 사이 공백이 1시간 이상일 때 (초과 30분 단위)^2 — 최우선 회피
@@ -110,6 +110,9 @@ G = dict(
     missed=5000.0,
     min_games_short=900.0,      # 최소게임수 미달 (부족분)^2 — 어기지 않는 규칙. balance_under(400)보다 위
     guest_in_mixed=25.0,        # 혼복에 남자 게스트 1명당 — 혼복 남자 자리는 가급적 정회원이 (소프트)
+    mixed_wish_seat=40.0,       # 혼복희망자가 이 혼복에 있음 (1명당 보너스, 음수) — 로컬 개선이 끌어온다
+    mixed_wish_short=350.0,     # 혼복희망 미달 (부족 게임수)^2. min_games_short(900)보다는 아래 —
+                                # '최소게임수 보장'과 부딪히면 최소게임수가 이긴다
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 (경기당)
     couple_want_pair=30.0,      # '원함' 부부가 혼복 같은 팀 (경기당 보너스, 음수)
     couple_finish_gap=120.0,    # 부부 마지막 경기 종료 차이가 30분을 넘으면 (초과 30분 단위)^2
@@ -120,7 +123,8 @@ G = dict(
     accept_tolerance=90.0,      # 교란 후 이 정도 나빠짐까지는 받아들여 탐색을 넓힌다(점점 0으로)
 )
 
-FEMALE_EARLIEST_SLOT_MIN = 7 * 60 + 30
+# (26.8.14 폐지) 여성 07:30 이전 슬롯 회피 규칙 — 사용자 지시로 제거.
+# 가중치 female_early_slot(W)·female_early(G)와 함께 삭제했다.
 
 # 교류전: 같은 클럽 안에서 (최대 게임수 - 최소 게임수) 격차를 이 값 이내로 제한.
 SPREAD_CAP = 2
@@ -227,16 +231,14 @@ def _same_club(a: dict, b: dict) -> bool:
 def build_eff_in(players: list[dict]) -> dict:
     """선수별 '실질 도착 시각' = 실제로 뛸 수 있는 가장 이른 슬롯.
 
-    IN시간이 코트 운영 전이거나(예: 07:00 IN인데 07:00엔 코트가 없음),
-    여성처럼 07:30 이전 회피 규칙이 걸린 경우까지 반영한다.
+    IN시간이 코트 운영 전인 경우(예: 07:00 IN인데 07:00엔 코트가 없음)를 반영한다.
     대기시간을 이 기준으로 재므로 '구조상 불가능한 대기'는 페널티로 잡히지 않는다.
+    (26.8.14: 여성 07:30 이전 회피 규칙 폐지 — 성별에 따른 보정 없음)
     """
     out = {}
     for p in players:
         av = p.get("available_slots") or []
         base = p["in_min"]
-        if p["gender"] == "F":
-            base = max(base, FEMALE_EARLIEST_SLOT_MIN)
         cand = [s for s in av if s >= base]
         out[p["id"]] = cand[0] if cand else (av[0] if av else base)
     return out
@@ -281,6 +283,28 @@ def _mixed_possible(players: list[dict], multi: bool) -> bool:
     return ok_clubs >= 2
 
 
+def mixed_wish_need(players: list[dict]) -> int:
+    """'혼복희망'을 적은 사람들을 다 태우려면 혼복이 최소 몇 판 필요한지.
+
+    혼복 1판의 자리는 남 2 · 여 2. 따라서
+      - 한 사람이 N판을 원하면 혼복은 최소 N판 있어야 하고(한 판에 한 자리),
+      - 같은 성별 희망 합계가 S면 최소 ceil(S / 2)판이 필요하다.
+    아무도 안 적었으면 0 — 이 기능은 적은 사람이 있을 때만 작동한다.
+    """
+    per_gender = {"M": 0, "F": 0}
+    top = 0
+    for p in players:
+        w = p.get("mixed_wish")
+        if not w:
+            continue
+        w = int(w)
+        per_gender[p["gender"]] = per_gender.get(p["gender"], 0) + w
+        top = max(top, w)
+    if not top:
+        return 0
+    return max(top, max(-(-s // 2) for s in per_gender.values()))
+
+
 def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
                  multi: bool = False) -> tuple[int, int]:
     """혼복 경기 수의 (최소 보장, 허용 상한).
@@ -291,17 +315,21 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
       (여자 4명 → 편 가르는 방법이 3가지뿐 → 여복 3판이 한계).
       그 이상 뛰려면 같은 4명이 상대편까지 똑같이 다시 붙어야 하므로,
       모자란 게임수만큼 상한을 더 올린다.
+    - **혼복희망(입력 '혼복희망' 칸)을 적은 사람이 있으면 그만큼 하한을 연다.**
+      아무도 안 적으면 지금까지와 완전히 동일 — 이 항은 0이다.
     - 상한을 넘는 혼복은 원칙대로 급격한 페널티.
     """
     if not _mixed_possible(players, multi):
         return 0, 0
+
+    wish_need = mixed_wish_need(players)
 
     n = len(players)
     n_m = sum(1 for p in players if p["gender"] == "M")
     n_f = n - n_m
     minority = min(n_m, n_f)
     if minority < 4:
-        return 0, 10 ** 6       # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
+        return wish_need, 10 ** 6   # 단성 복식 자체가 불가능 → 혼복이 유일한 수단
 
     quota = 0
     minority_players = [p for p in players
@@ -319,8 +347,9 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
         quota = -(-short_seats // 2)                   # 혼복 1판이 소수 성별 2명을 태운다
 
     if n_f <= MIXED_SMALL_WOMEN:
-        return MIXED_MIN_GAMES, max(quota, MIXED_DEFAULT_QUOTA)
-    return 0, quota
+        lo = max(MIXED_MIN_GAMES, wish_need)
+        return lo, max(quota, MIXED_DEFAULT_QUOTA, lo)
+    return wish_need, max(quota, wish_need)
 
 
 def build_couples(players: list[dict], couples) -> tuple[dict, list]:
@@ -391,6 +420,8 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
         "player_slots": {p["id"]: [] for p in players},
+        # 사람별 혼복 출전 수 — '혼복희망' 충족 여부를 그리디가 슬롯마다 보기 위함
+        "player_mixed": {p["id"]: 0 for p in players},
         "pair_count": {},
         "quad_count": {},      # 같은 4명이 다시 만난 횟수 (편 구성 무관)
         "matchup_count": {},   # 같은 4명이 같은 편 구성으로 다시 만난 횟수
@@ -424,6 +455,8 @@ def update_state(state: dict, match: dict) -> None:
     for p_id in match["team1"] + match["team2"]:
         state["player_games"][p_id] += 1
         state["player_slots"][p_id].append(match["slot_start"])
+        if match["type"] == "X" and p_id in state.get("player_mixed", {}):
+            state["player_mixed"][p_id] += 1
         bk = state.get("bal_of", {}).get(p_id)
         if bk in state.get("bal_game_sum", {}):
             state["bal_game_sum"][bk] += 1
@@ -571,9 +604,15 @@ def match_cost(
         if state.get("multi_club") and not mixed_is_fallback:
             cost += W["mixed_nonpriority"]
         # 남자 게스트는 혼복보다 남복 위주 — 혼복 남자 자리는 가급적 정회원이 맡는다.
-        # (여자 게스트는 혼복 가능)
+        # (여자 게스트는 혼복 가능. 단 본인이 '혼복희망'을 적었으면 그 사람은 예외)
         cost += W["guest_in_mixed"] * sum(
-            1 for p in all_players if p["gender"] == "M" and p["membership"] == "게스트")
+            1 for p in all_players
+            if p["gender"] == "M" and p["membership"] == "게스트" and not p.get("mixed_wish"))
+        # 혼복희망을 아직 못 채운 사람이 이 혼복에 있으면 우대 — 혼복 자리를 그 사람에게 준다.
+        pm = state.get("player_mixed") or {}
+        cost -= W["mixed_wish_seat"] * sum(
+            1 for p in all_players
+            if p.get("mixed_wish") and pm.get(p["id"], 0) < int(p["mixed_wish"]))
         # 부부 페어: '피함' 부부는 같은 팀 회피, '원함' 부부는 우대
         cpref = state.get("couple_pref")
         if cpref:
@@ -596,10 +635,8 @@ def match_cost(
         affinity = COURT_AFFINITY.get(court_name.upper(), {}).get(match_type, 0.0)
         cost += W["court_affinity"] * affinity
 
-    if slot_start < FEMALE_EARLIEST_SLOT_MIN:
-        female_count = sum(1 for p in all_players if p["gender"] == "F")
-        if female_count > 0:
-            cost += W["female_early_slot"] * female_count
+    # (26.8.14 폐지) '여성 07:30 이전 슬롯 회피'는 사용자 지시로 제거 — 이제 여성도
+    # 본인 IN시간부터 아무 슬롯이나 배정된다.
 
     return cost
 
@@ -969,9 +1006,13 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
             if male["exp"] < female["exp"]:
                 cost += G["mixed_skill_violation"]
         # 남자 게스트는 혼복보다 남복 위주 — 로컬 개선(선수 교환)이 혼복에서 빼내게 한다.
-        # (여자 게스트는 혼복 가능)
+        # (여자 게스트는 혼복 가능. '혼복희망'을 적은 본인은 예외 — 빼내면 안 된다)
         cost += G["guest_in_mixed"] * sum(
-            1 for p in t1 + t2 if p["gender"] == "M" and p["membership"] == "게스트")
+            1 for p in t1 + t2
+            if p["gender"] == "M" and p["membership"] == "게스트" and not p.get("mixed_wish"))
+        # 혼복희망자를 혼복 자리로 끌어오는 힘 (로컬 개선의 선수 교환이 이 항을 본다).
+        # 판수 자체는 그리디가 정하고, 과충족은 full_score의 미달 항이 0이 되며 자연히 멈춘다.
+        cost -= G["mixed_wish_seat"] * sum(1 for p in t1 + t2 if p.get("mixed_wish"))
         # 부부 페어: '피함' 부부 같은 팀 페널티 / '원함' 부부 같은 팀 보너스
         if couple_pref:
             for team_ids in (match["team1"], match["team2"]):
@@ -984,8 +1025,7 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
 
     cost += G["court_affinity"] * COURT_AFFINITY.get(str(match["court"]).upper(), {}).get(mtype, 0.0)
 
-    if match["slot_start"] < FEMALE_EARLIEST_SLOT_MIN:
-        cost += G["female_early"] * sum(1 for p in t1 + t2 if p["gender"] == "F")
+    # (26.8.14 폐지) '여성 07:30 이전 슬롯 회피' 제거 — 사용자 지시.
 
     for team in (t1, t2):
         if team[0]["membership"] == team[1]["membership"]:
@@ -1149,6 +1189,23 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
         short = eff_min_games(p) - state["player_games"][p["id"]]
         if short > 0:
             score += G["min_games_short"] * short * short
+
+    # 개인별 혼복희망 — 적은 사람이 있을 때만 작동(아무도 안 적으면 이 루프는 비용 0).
+    # 매치에서 직접 세므로 Refiner가 선수를 바꿔도 항상 실제 값과 일치한다.
+    if any(p.get("mixed_wish") for p in players):
+        mixed_played = {}
+        for m in state["matches"]:
+            if m["type"] != "X":
+                continue
+            for pid in m["team1"] + m["team2"]:
+                mixed_played[pid] = mixed_played.get(pid, 0) + 1
+        for p in players:
+            w = p.get("mixed_wish")
+            if not w:
+                continue
+            short = int(w) - mixed_played.get(p["id"], 0)
+            if short > 0:
+                score += G["mixed_wish_short"] * short * short
 
     # 부부는 같이 오간다 — 마지막 경기 종료가 같거나 30분 안쪽 차이가 되게 (소프트)
     # 단, 종료시간차=30 부부(신혁재·방미라)는 반대로 '정확히 30분 차이'를 목표로 한다.
@@ -1675,6 +1732,9 @@ def solve(
             "out_min": p["out_min"],
             "max_games": p.get("max_games"),
             "min_games": p.get("min_games"),
+            "mixed_wish": p.get("mixed_wish"),
+            "mixed_games": sum(1 for m in best_state["matches"]
+                               if m["type"] == "X" and pid in m["team1"] + m["team2"]),
             # 시간표 품질 지표
             "eff_in": e_in,
             "start_delay": (slots[0] - e_in) if slots else 0,

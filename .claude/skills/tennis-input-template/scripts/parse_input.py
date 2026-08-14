@@ -250,6 +250,22 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
                         raise ValueError(f"'{name}': 최소게임수는 1 이상이어야 합니다")
             if min_games is not None and max_games is not None and min_games > max_games:
                 raise ValueError(f"'{name}': 최소게임수({min_games})가 최대게임수({max_games})보다 큽니다")
+
+            # 혼복희망 (선택): "그중 혼복으로 N게임 뛰고 싶다".
+            # 비워 두면 지금까지와 완전히 동일 — 적은 사람이 있을 때만 혼복 하한이 열린다.
+            mixed_wish = None
+            if "혼복희망" in col_idx:
+                raw = row[col_idx["혼복희망"]]
+                if raw not in (None, ""):
+                    try:
+                        mixed_wish = int(raw)
+                    except (ValueError, TypeError):
+                        raise ValueError(f"'{name}': 혼복희망은 정수여야 합니다 (현재: '{raw}')")
+                    if mixed_wish < 1:
+                        raise ValueError(f"'{name}': 혼복희망은 1 이상이어야 합니다")
+                    if max_games is not None and mixed_wish > max_games:
+                        raise ValueError(
+                            f"'{name}': 혼복희망({mixed_wish})이 최대게임수({max_games})보다 큽니다")
         except (ValueError, TypeError) as e:
             errors.append(str(e))
             continue
@@ -265,6 +281,7 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             "out_min": out_min,
             "max_games": max_games,
             "min_games": min_games,
+            "mixed_wish": mixed_wish,
         })
         pid += 1
 

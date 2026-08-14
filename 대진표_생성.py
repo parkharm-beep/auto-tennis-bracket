@@ -246,6 +246,9 @@ def cmd_check(args) -> int:
         print(f"  최소게임수 지정 {len(min_list)}명: " + ", ".join(f"{n}={v}" for n, v in min_list))
     if max_list:
         print(f"  최대게임수 지정 {len(max_list)}명: " + ", ".join(f"{n}={v}" for n, v in max_list))
+    wish_list = [(p["name"], p["mixed_wish"]) for p in players if p.get("mixed_wish")]
+    if wish_list:
+        print(f"  혼복희망 {len(wish_list)}명: " + ", ".join(f"{n}={v}게임" for n, v in wish_list))
 
     print()
     if warnings:

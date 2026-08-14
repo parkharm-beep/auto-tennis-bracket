@@ -141,6 +141,23 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
             })
     scores["min_games_violations"] = min_games_violations
 
+    # 혼복희망 — 적은 사람만 본다. 미달은 medium(정보·소프트, RETRY 아님):
+    # 혼복 판수 자체가 남복/여복 우선·구력 균형 같은 하드한 것들에 밀릴 수 있다.
+    mixed_wish_short = []
+    for s in player_stats:
+        w = s.get("mixed_wish")
+        if not w:
+            continue
+        got = s.get("mixed_games", 0)
+        if got < w:
+            mixed_wish_short.append(f"{s['name']} {got}/{w}")
+            issues.append({
+                "severity": "medium",
+                "code": "mixed_wish_short",
+                "msg": f"{s['name']}: 혼복희망 {w}게임 중 {got}게임만 배정 — 혼복 판수가 부족했음",
+            })
+    scores["mixed_wish_short"] = mixed_wish_short
+
     pair_count = defaultdict(int)
     for m in matches:
         for team in (m["team1"], m["team2"]):
@@ -258,7 +275,7 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
             continue
         gaps = [slots[i] - slots[i - 1] - 30 for i in range(1, len(slots))]
         mine = [g for g in gaps if g >= THRESHOLDS["long_gap_min"]]
-        # 대기 = 실질 도착(eff_in, 여성 07:30 회피·코트 개장 반영) 후 첫 경기까지 + 경기 사이 공백
+        # 대기 = 실질 도착(eff_in, 코트 개장 시각 반영) 후 첫 경기까지 + 경기 사이 공백
         start_delay = s.get("start_delay")
         if start_delay is None:
             start_delay = max(0, slots[0] - s.get("eff_in", s["in_min"]))
@@ -504,6 +521,8 @@ def print_report(review: dict) -> None:
     print(f"혼복 규칙 위반: {s['mixed_skill_violations']}건")
     if s.get("min_games_violations"):
         print(f"최소게임수 미달: {', '.join(s['min_games_violations'])}")
+    if s.get("mixed_wish_short"):
+        print(f"혼복희망 미달: {', '.join(s['mixed_wish_short'])}")
     if s.get("male_guest_mixed_seats"):
         print(f"혼복에 들어간 남자 게스트: {s['male_guest_mixed_seats']}자리 (남자 게스트는 남복 우선 — 인원 사정상 일부 가능)")
     if s.get("couple_avoid_paired"):

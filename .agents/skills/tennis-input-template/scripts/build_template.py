@@ -75,8 +75,9 @@ PREFILL_NOTE_FILL = PatternFill("solid", fgColor="FFF8DC")
 
 
 def _build_players_sheet(ws, prefill: str = ""):
-    headers = ["번호", "이름", "성별", "구력", "구분", "클럽", "IN시간", "OUT시간", "최소게임수", "최대게임수", "메모"]
-    widths = [6, 12, 8, 8, 12, 12, 10, 10, 12, 12, 28]
+    headers = ["번호", "이름", "성별", "구력", "구분", "클럽", "IN시간", "OUT시간",
+               "최소게임수", "최대게임수", "혼복희망", "메모"]
+    widths = [6, 12, 8, 8, 12, 12, 10, 10, 12, 12, 10, 28]
     for col_idx, (title, w) in enumerate(zip(headers, widths), start=1):
         cell = ws.cell(row=1, column=col_idx, value=title)
         _style_header(cell)
@@ -86,7 +87,7 @@ def _build_players_sheet(ws, prefill: str = ""):
 
     for r in range(2, 32):
         ws.cell(row=r, column=1, value=r - 1)
-        for c in range(1, 12):
+        for c in range(1, 13):
             _style_body(ws.cell(row=r, column=c))
         ws.cell(row=r, column=7).number_format = "@"  # IN시간
         ws.cell(row=r, column=8).number_format = "@"  # OUT시간
@@ -107,9 +108,10 @@ def _build_players_sheet(ws, prefill: str = ""):
             if max_g != "" and max_g is not None:
                 ws.cell(row=r, column=10, value=max_g)
                 ws.cell(row=r, column=10).fill = PREFILL_NOTE_FILL
+            # 혼복희망(col 11)은 사전채움 비움 — 그 주에 요청한 사람만 직접 입력
             if memo:
-                ws.cell(row=r, column=11, value=memo)
-                ws.cell(row=r, column=11).fill = PREFILL_NOTE_FILL
+                ws.cell(row=r, column=12, value=memo)
+                ws.cell(row=r, column=12).fill = PREFILL_NOTE_FILL
             for c in (3, 4, 5, 6, 7, 8):
                 if ws.cell(row=r, column=c).value in (None, ""):
                     ws.cell(row=r, column=c).fill = PREFILL_NOTE_FILL
@@ -182,6 +184,10 @@ def _build_guide_sheet(ws):
         ("    - 비우면 무제한 (IN~OUT 범위 안에서 알고리즘이 자동 분배)", False),
         ("    - 예: '3게임만 하고 갈게요' → 3 입력", False),
         ("    - 최소게임수와 같이 적으면 최소 ≤ 최대여야 합니다", False),
+        ("• 혼복희망: 그중 혼복(남녀 섞인 복식)으로 뛰고 싶은 게임 수 (정수, 선택)", False),
+        ("    - 예: '혼복으로 2게임은 하고 싶어요' → 2 입력", False),
+        ("    - 비워 두는 것이 기본입니다. 원칙은 남복/여복이라 혼복은 0판일 수 있습니다", False),
+        ("    - 적은 사람이 있으면 그만큼 혼복 판을 만들고 그 자리에 그 사람을 넣습니다", False),
         ("• 메모: 자유 기재 (선택, 알고리즘에 영향 없음)", False),
         ("", False),
         ("■ 2. 코트 시트 작성법", True),
@@ -222,8 +228,7 @@ def _build_guide_sheet(ws):
         ("  ※ 단, 인원 부족 시 위 우선순위는 양보될 수 있음", False),
         ("", False),
         ("[D] 시간 제약", True),
-        ("• 여성 참가자는 가급적 07:30 이후 슬롯에 배정", False),
-        ("  (IN시간이 더 우선 — 7시 IN이면 7시부터 가능)", False),
+        ("• 각자 IN~OUT 시간 안에서만 배정 (성별에 따른 시간대 제한은 없음)", False),
         ("", False),
         ("[E] 팀 매칭 (재미와 균형)", True),
         ("• 두 팀의 합산 구력이 비슷하도록 매칭 (예: 5+7=12 vs 6+6=12)", False),
@@ -260,6 +265,10 @@ def _build_guide_sheet(ws):
         ("    - 여러 명의 최소게임수 합이 전체 자리보다 크면 다 지킬 수 없음 (경고 표시)", False),
         ("• 최대게임수 칸에 정수 입력 시 정확히 그 수 이하로 배정 (hard 제약)", False),
         ("• 빈 칸이면 IN~OUT 범위 안에서 균형 배정", False),
+        ("• 혼복희망 칸에 정수 입력 시 그만큼 혼복 판을 열고 그 사람을 그 자리에 배정 (소프트)", False),
+        ("    - 아무도 안 적으면 지금까지와 동일 — 남복/여복 우선 원칙 그대로", False),
+        ("    - 남자 게스트도 혼복희망을 적으면 '남복 위주' 규칙에서 본인만 예외가 됩니다", False),
+        ("    - 구력·공백·최소게임수 같은 더 강한 규칙에 밀리면 못 채울 수 있음 (검토 보고에 표시)", False),
         ("", False),
         ("[I] 교류전 (클럽 대항)", True),
         ("• '클럽' 칸에 둘 이상의 클럽명이 있으면 교류전 모드 자동 작동", False),
