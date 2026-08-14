@@ -348,6 +348,33 @@ def build_schedule_slots(courts: list[dict]) -> list[dict]:
     return schedule
 
 
+def clamp_mixed_wish(players: list[dict]) -> list[str]:
+    """혼복희망을 '본인이 실제로 뛸 수 있는 최대 게임수'로 자르고 경고를 돌려준다.
+
+    자르지 않으면 실현 불가능한 값(예: 30) 하나가 `mixed_limits()`의 혼복 하한을
+    그만큼 밀어 올려 대진표 전체가 혼복이 된다(실측: 여복 3판 → 1판, 혼복 4판 → 9판,
+    그런데 review는 PASS). 최소게임수가 `_max_games_no3` 클램프 + 경고로 막혀 있는 것과
+    같은 방어를 대칭으로 건다.
+
+    CLI(`main()`)와 웹(`run.py`)이 각자 경고 루프를 갖고 있으므로 **양쪽 모두** 이 함수를
+    부른다 — 한쪽에만 넣으면 웹이 무방비가 된다(사용자는 웹만 쓴다).
+    반드시 `attach_available_slots()` 뒤에 호출할 것.
+    """
+    warns = []
+    for p in players:
+        w = p.get("mixed_wish")
+        if not w:
+            continue
+        cap = _max_games_no3(p.get("available_slots") or [])
+        if p.get("max_games") is not None:
+            cap = min(cap, p["max_games"])
+        if w > cap:
+            warns.append(f"'{p['name']}': 혼복희망({w}) > 본인이 뛸 수 있는 최대({cap}게임)"
+                         f" — {cap}게임까지만 반영됨")
+            p["mixed_wish"] = cap if cap > 0 else None
+    return warns
+
+
 def attach_available_slots(players: list[dict], schedule_slots: list[dict]) -> None:
     for p in players:
         avail = []
@@ -433,6 +460,7 @@ def main():
         if p.get("min_games") and p["min_games"] > _max_games_no3(p["available_slots"]):
             cap = _max_games_no3(p["available_slots"])
             warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > 3연속 없이 가능한 최대({cap}게임) — {cap}게임까지만 보장됨")
+    warnings.extend(clamp_mixed_wish(players))
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0

@@ -144,6 +144,17 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     # 혼복희망 — 적은 사람만 본다. 미달은 medium(정보·소프트, RETRY 아님):
     # 혼복 판수 자체가 남복/여복 우선·구력 균형 같은 하드한 것들에 밀릴 수 있다.
     mixed_wish_short = []
+    # 혼복 자체가 성립 불가능한 명단(한쪽 성별 0명 / 교류전에서 남1+여1 팀을 못 만드는 클럽)인지.
+    # '구조적으로 불가능'과 '경쟁에서 밀림'은 원인이 달라 문구를 나눈다.
+    _clubs = {p.get("club", "") for p in parsed["players"]}
+    if len(_clubs) > 1:
+        mixed_possible = any(
+            any(p["gender"] == "M" and p.get("club", "") == c for p in parsed["players"])
+            and any(p["gender"] == "F" and p.get("club", "") == c for p in parsed["players"])
+            for c in _clubs)
+    else:
+        mixed_possible = (any(p["gender"] == "M" for p in parsed["players"])
+                          and any(p["gender"] == "F" for p in parsed["players"]))
     for s in player_stats:
         w = s.get("mixed_wish")
         if not w:
@@ -151,10 +162,12 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         got = s.get("mixed_games", 0)
         if got < w:
             mixed_wish_short.append(f"{s['name']} {got}/{w}")
+            why = ("이번 주 인원 구성으로는 혼복 자체가 불가능"
+                   if not mixed_possible else "혼복 판수가 부족했음")
             issues.append({
                 "severity": "medium",
                 "code": "mixed_wish_short",
-                "msg": f"{s['name']}: 혼복희망 {w}게임 중 {got}게임만 배정 — 혼복 판수가 부족했음",
+                "msg": f"{s['name']}: 혼복희망 {w}게임 중 {got}게임만 배정 — {why}",
             })
     scores["mixed_wish_short"] = mixed_wish_short
 
@@ -419,14 +432,19 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
 
     # 남자 게스트 남복 우선 — 혼복에 들어간 남자 게스트 자리 수 (정보용, 소프트 선호).
     # 여자 게스트는 혼복 가능이라 세지 않는다.
-    male_guest_mixed_seats = 0
+    # 본인이 '혼복희망'을 적었으면 그 판수까지는 의도된 배정이므로 세지 않는다
+    # (안 빼면 희망을 정확히 채운 것이 '남복 우선 실패'로 보고된다).
+    guest_seats = defaultdict(int)
     for m in matches:
         if m["type"] != "X":
             continue
         for pid in m["team1"] + m["team2"]:
             p = players_by_id[pid]
             if p.get("membership") == "게스트" and p.get("gender") == "M":
-                male_guest_mixed_seats += 1
+                guest_seats[pid] += 1
+    male_guest_mixed_seats = sum(
+        max(0, n - int(players_by_id[pid].get("mixed_wish") or 0))
+        for pid, n in guest_seats.items())
     scores["male_guest_mixed_seats"] = male_guest_mixed_seats
 
     males_total = sum(1 for p in parsed["players"] if p["gender"] == "M")

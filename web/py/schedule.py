@@ -56,7 +56,8 @@ W = dict(
                                 # 혼복을 막는 게 아니라 '혼복 남자 자리를 정회원이 맡게' 미는 힘이므로
                                 # single_mixed_nonpriority(70)보다 낮게 둔다.
     mixed_wish_seat=55.0,       # 혼복희망을 아직 못 채운 사람이 이 혼복에 있음 (1명당, 음수 비용).
-                                # guest_in_mixed(30)보다 크게 둬야 '남자 게스트 희망자'가 밀려나지 않는다.
+                                # guest_in_mixed(30)를 이겨야 남자 게스트 희망자가 혼복 자리를 잡는다.
+                                # 충족된 뒤에는 붙지 않으므로 과충족 압력이 없다.
 )
 
 IDLE_URGENCY_CAP = 4.0          # 유휴 우선 보정 상한(30분 단위) — 2시간 이상은 더 커지지 않음
@@ -110,7 +111,6 @@ G = dict(
     missed=5000.0,
     min_games_short=900.0,      # 최소게임수 미달 (부족분)^2 — 어기지 않는 규칙. balance_under(400)보다 위
     guest_in_mixed=25.0,        # 혼복에 남자 게스트 1명당 — 혼복 남자 자리는 가급적 정회원이 (소프트)
-    mixed_wish_seat=40.0,       # 혼복희망자가 이 혼복에 있음 (1명당 보너스, 음수) — 로컬 개선이 끌어온다
     mixed_wish_short=350.0,     # 혼복희망 미달 (부족 게임수)^2. min_games_short(900)보다는 아래 —
                                 # '최소게임수 보장'과 부딪히면 최소게임수가 이긴다
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 (경기당)
@@ -283,26 +283,31 @@ def _mixed_possible(players: list[dict], multi: bool) -> bool:
     return ok_clubs >= 2
 
 
-def mixed_wish_need(players: list[dict]) -> int:
+def mixed_wish_need(players: list[dict], multi: bool = False) -> int:
     """'혼복희망'을 적은 사람들을 다 태우려면 혼복이 최소 몇 판 필요한지.
 
-    혼복 1판의 자리는 남 2 · 여 2. 따라서
-      - 한 사람이 N판을 원하면 혼복은 최소 N판 있어야 하고(한 판에 한 자리),
-      - 같은 성별 희망 합계가 S면 최소 ceil(S / 2)판이 필요하다.
+    - 한 사람이 N판을 원하면 혼복은 최소 N판 있어야 한다(한 판에 한 자리).
+    - 평소(단일 클럽) 혼복 1판의 자리는 남 2 · 여 2 → 같은 성별 희망 합계가 S면 ceil(S/2)판.
+    - **교류전은 한 판이 '같은 클럽 남1+여1' 대 '다른 클럽 남1+여1'** 이므로
+      (클럽, 성별) 조합마다 판당 자리가 **1개뿐**이다. 2로 나누면 과소계산된다
+      (실측: A클럽 남자 3명이 각 1판 희망 → 2판으로 계산되지만 실제로는 3판 필요).
+
     아무도 안 적었으면 0 — 이 기능은 적은 사람이 있을 때만 작동한다.
     """
-    per_gender = {"M": 0, "F": 0}
+    seats_per_match = 1 if multi else 2
+    per_group: dict = {}
     top = 0
     for p in players:
         w = p.get("mixed_wish")
         if not w:
             continue
         w = int(w)
-        per_gender[p["gender"]] = per_gender.get(p["gender"], 0) + w
+        key = (p.get("club", ""), p["gender"]) if multi else p["gender"]
+        per_group[key] = per_group.get(key, 0) + w
         top = max(top, w)
     if not top:
         return 0
-    return max(top, max(-(-s // 2) for s in per_gender.values()))
+    return max(top, max(-(-s // seats_per_match) for s in per_group.values()))
 
 
 def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
@@ -322,7 +327,17 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
     if not _mixed_possible(players, multi):
         return 0, 0
 
-    wish_need = mixed_wish_need(players)
+    total_matches = 0
+    for sl in (schedule_slots or []):
+        n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
+        total_matches += min(len(sl["courts"]), n_avail // 4)
+
+    wish_need = mixed_wish_need(players, multi)
+    # 실현 가능한 판수를 넘는 희망은 하한이 될 수 없다. 넘겨 두면 '절대 못 채우는 하한'이
+    # 남아 모든 후보에 같은 상수 페널티가 붙고, 그 사이 mixed_below_min이 대진표를 통째로
+    # 혼복으로 민다. (개인 단위 클램프는 parse_input.clamp_mixed_wish가 따로 건다)
+    if total_matches:
+        wish_need = min(wish_need, total_matches)
 
     n = len(players)
     n_m = sum(1 for p in players if p["gender"] == "M")
@@ -336,20 +351,24 @@ def mixed_limits(players: list[dict], schedule_slots: list[dict] | None,
                         if p["gender"] == ("F" if n_f <= n_m else "M")]
     # 짝도 안 겹치고 구력도 맞는 단성 복식을 몇 판까지 만들 수 있는지
     capacity = good_singles_capacity(minority_players, multi)
-    total_matches = 0
-    for sl in (schedule_slots or []):
-        n_avail = sum(1 for p in players if sl["slot_start"] in p.get("available_slots", []))
-        total_matches += min(len(sl["courts"]), n_avail // 4)
     if total_matches and n:
         target = round(4 * total_matches / n)          # 1인당 공평 게임수
         # 소수 성별이 필요한 총 출전 자리 − 단성 복식이 태울 수 있는 자리(1판당 4명)
         short_seats = max(0, minority * target - 4 * capacity)
         quota = -(-short_seats // 2)                   # 혼복 1판이 소수 성별 2명을 태운다
 
+    # 혼복희망이 있어도 **하한은 1판까지만** 올린다. 희망 판수만큼 하한을 올리면
+    # `mixed_below_min`(300×부족²)이 남복/여복을 통째로 밀어내는 폭주 레버가 된다
+    # (26.8.14 실측: 오타 한 칸으로 여복 3판 → 1판, 혼복 4판 → 9판).
+    # 하한 1판은 '혼복이 자연히 0판인 명단에서도 희망이 굶지 않게' 하는 최소 장치이고,
+    # 나머지는 상한 개방 + 자리 우대(mixed_wish_seat) + 미달 페널티(mixed_wish_short)가
+    # 채운다. 실측(실전 21명, 시드 7/1/42): 하한을 희망만큼 올렸을 때와 충족도는 같고
+    # (이선우 2/2/2) 혼복만 5/4/4 → 4/3/4로 줄어 원칙에 더 가깝다.
+    wish_floor = 1 if wish_need else 0
     if n_f <= MIXED_SMALL_WOMEN:
-        lo = max(MIXED_MIN_GAMES, wish_need)
-        return lo, max(quota, MIXED_DEFAULT_QUOTA, lo)
-    return wish_need, max(quota, wish_need)
+        lo = max(MIXED_MIN_GAMES, wish_floor)
+        return lo, max(quota, MIXED_DEFAULT_QUOTA, wish_need)
+    return wish_floor, max(quota, wish_need)
 
 
 def build_couples(players: list[dict], couples) -> tuple[dict, list]:
@@ -604,15 +623,18 @@ def match_cost(
         if state.get("multi_club") and not mixed_is_fallback:
             cost += W["mixed_nonpriority"]
         # 남자 게스트는 혼복보다 남복 위주 — 혼복 남자 자리는 가급적 정회원이 맡는다.
-        # (여자 게스트는 혼복 가능. 단 본인이 '혼복희망'을 적었으면 그 사람은 예외)
+        # (여자 게스트는 혼복 가능. 단 본인이 '혼복희망'을 적었고 **아직 못 채웠으면** 예외 —
+        #  다 채운 뒤에는 페널티가 되살아나 원칙으로 돌아간다)
+        pm = state["player_mixed"]
+        def _wish_unmet(p):
+            w = p.get("mixed_wish")
+            return bool(w) and pm.get(p["id"], 0) < int(w)
+
         cost += W["guest_in_mixed"] * sum(
             1 for p in all_players
-            if p["gender"] == "M" and p["membership"] == "게스트" and not p.get("mixed_wish"))
+            if p["gender"] == "M" and p["membership"] == "게스트" and not _wish_unmet(p))
         # 혼복희망을 아직 못 채운 사람이 이 혼복에 있으면 우대 — 혼복 자리를 그 사람에게 준다.
-        pm = state.get("player_mixed") or {}
-        cost -= W["mixed_wish_seat"] * sum(
-            1 for p in all_players
-            if p.get("mixed_wish") and pm.get(p["id"], 0) < int(p["mixed_wish"]))
+        cost -= W["mixed_wish_seat"] * sum(1 for p in all_players if _wish_unmet(p))
         # 부부 페어: '피함' 부부는 같은 팀 회피, '원함' 부부는 우대
         cpref = state.get("couple_pref")
         if cpref:
@@ -1006,13 +1028,15 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
             if male["exp"] < female["exp"]:
                 cost += G["mixed_skill_violation"]
         # 남자 게스트는 혼복보다 남복 위주 — 로컬 개선(선수 교환)이 혼복에서 빼내게 한다.
-        # (여자 게스트는 혼복 가능. '혼복희망'을 적은 본인은 예외 — 빼내면 안 된다)
+        # (여자 게스트는 혼복 가능)
+        #
+        # 혼복희망자도 여기서는 면제하지 않는다. 면제하면 '희망을 채운 뒤'에도 혼복 자리가
+        # 공짜가 되어 과충족을 막을 힘이 사라진다(26.8.14 실측: 희망 1인데 2판, 남자 게스트
+        # 혼복 자리 1→2). 희망은 Refiner의 `_wish_delta`(mixed_wish_short, 충족되면 0)가
+        # 끌어오고, 그 힘(350×부족²)이 guest_in_mixed(25)보다 훨씬 크므로 미충족일 때는
+        # 확실히 이기고 충족된 뒤에는 이 페널티가 되살아나 원칙(남복 위주)으로 돌아간다.
         cost += G["guest_in_mixed"] * sum(
-            1 for p in t1 + t2
-            if p["gender"] == "M" and p["membership"] == "게스트" and not p.get("mixed_wish"))
-        # 혼복희망자를 혼복 자리로 끌어오는 힘 (로컬 개선의 선수 교환이 이 항을 본다).
-        # 판수 자체는 그리디가 정하고, 과충족은 full_score의 미달 항이 0이 되며 자연히 멈춘다.
-        cost -= G["mixed_wish_seat"] * sum(1 for p in t1 + t2 if p.get("mixed_wish"))
+            1 for p in t1 + t2 if p["gender"] == "M" and p["membership"] == "게스트")
         # 부부 페어: '피함' 부부 같은 팀 페널티 / '원함' 부부 같은 팀 보너스
         if couple_pref:
             for team_ids in (match["team1"], match["team2"]):
@@ -1283,6 +1307,36 @@ class Refiner:
             delta += couple_finish_cost(new_a, new_b, gap) - couple_finish_cost(old_a, old_b, gap)
         return delta
 
+    def _wish_delta(self, changes: dict) -> float:
+        """일부 선수의 혼복 출전 수가 changes만큼 바뀔 때 '혼복희망 미달' 비용의 변화량.
+
+        full_score의 `mixed_wish_short`(350×부족²)와 같은 식이다. Refiner는 교환을
+        **델타로만** 판정하므로(전역 점수는 재계산 때만 본다) 이 항이 없으면 혼복희망을
+        아예 못 본다. 충족된 뒤에는 부족=0이라 델타도 0 → 과충족을 부추기지 않는다.
+        (`_finish_delta`가 부부 종료시각에 대해 하는 일과 같은 패턴)
+        """
+        if not self.wish:
+            return 0.0
+        d = 0.0
+        for pid, ch in changes.items():
+            w = self.wish.get(pid)
+            if not w or not ch:
+                continue
+            cur = self.mixed_of.get(pid, 0)
+            old_s = max(0, w - cur)
+            new_s = max(0, w - (cur + ch))
+            d += G["mixed_wish_short"] * (new_s * new_s - old_s * old_s)
+        return d
+
+    @staticmethod
+    def _mixed_change(m1, m2, a_id, b_id) -> dict:
+        """선수 교환으로 혼복 출전 수가 어떻게 바뀌는지. 둘 다 혼복이거나 둘 다 아니면 변화 없음."""
+        x1 = m1["type"] == "X"
+        x2 = m2["type"] == "X"
+        if x1 == x2:
+            return {}
+        return {a_id: (1 if x2 else -1), b_id: (1 if x1 else -1)}
+
     # -- 파생 캐시 -----------------------------------------------------------
     def _sync(self) -> None:
         self.matches = self.state["matches"]
@@ -1298,6 +1352,19 @@ class Refiner:
         for pos in self.positions:
             mi, side, idx = pos
             self.pos_groups.setdefault(self._group_key(self.matches[mi][side][idx]), []).append(pos)
+        # 혼복희망: 희망자와 현재 혼복 출전 수. 매치에서 직접 세므로 교환 후에도 정확하다.
+        self.wish = {p["id"]: int(p["mixed_wish"]) for p in self.players if p.get("mixed_wish")}
+        self.mixed_of = {}
+        for m in self.matches:
+            if m["type"] != "X":
+                continue
+            for pid in m["team1"] + m["team2"]:
+                self.mixed_of[pid] = self.mixed_of.get(pid, 0) + 1
+        # 그리디가 세던 state["player_mixed"]는 교환으로 어긋나므로 여기서 실제 값으로 맞춘다.
+        pm = self.state.get("player_mixed")
+        if pm is not None:
+            for pid in pm:
+                pm[pid] = self.mixed_of.get(pid, 0)
         self.qcache = [self.quality(m) for m in self.matches]
         self.tcache = {pid: self.timing(pid, sl) for pid, sl in self.slots_of.items()}
         # 성별별 '4명 조합 소진' 여부 — 재대결 비용을 full_score와 같은 기준으로 매기기 위함
@@ -1407,6 +1474,9 @@ class Refiner:
             oc = self.state["matchup_count"].get(kk, 0)
             delta += _matchup_cost(oc + dd) - _matchup_cost(oc)
 
+        # 혼복 ↔ 단성 복식 사이의 교환이면 혼복희망 충족도가 바뀐다.
+        delta += self._wish_delta(self._mixed_change(m1, m2, a_id, b_id))
+
         return delta, new_sa, new_sb, (changes, quad_ch, mu_ch)
 
     def _player_swap_commit(self, p1, p2, new_sa, new_sb, count_changes) -> None:
@@ -1415,6 +1485,10 @@ class Refiner:
         mi2, side2, idx2 = p2
         m1, m2 = self.matches[mi1], self.matches[mi2]
         a_id, b_id = m1[side1][idx1], m2[side2][idx2]
+        for pid, ch in self._mixed_change(m1, m2, a_id, b_id).items():
+            self.mixed_of[pid] = self.mixed_of.get(pid, 0) + ch
+            if self.state.get("player_mixed") is not None:
+                self.state["player_mixed"][pid] = self.mixed_of[pid]
         m1[side1][idx1], m2[side2][idx2] = b_id, a_id
         for m in (m1, m2):
             for side in SIDES:

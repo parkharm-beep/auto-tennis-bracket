@@ -15,6 +15,7 @@ from parse_input import (
     parse_courts,
     build_schedule_slots,
     attach_available_slots,
+    clamp_mixed_wish,
     min_to_hhmm,
     parse_member_settings,
     COUPLES_DEFAULT,
@@ -72,6 +73,9 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
             warnings.append(
                 f"'{p['name']}': 최소게임수({p['min_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 수까지만 보장됨"
             )
+
+    # 혼복희망 클램프 — CLI(parse_input.main)와 같은 방어를 웹에도 건다.
+    warnings.extend(clamp_mixed_wish(players))
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0
