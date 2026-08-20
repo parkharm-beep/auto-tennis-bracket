@@ -18,6 +18,7 @@ from parse_input import (
     clamp_mixed_wish,
     min_to_hhmm,
     parse_member_settings,
+    _max_games_streak,
     COUPLES_DEFAULT,
 )
 from schedule import solve
@@ -69,9 +70,19 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
             warnings.append(
                 f"'{p['name']}': 최대게임수({p['max_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 자연 제한됨"
             )
-        if p.get("min_games") and p["min_games"] > len(p["available_slots"]):
+        # 보장 한도는 '가용 슬롯 수'가 아니라 '본인 연속게임 설정 하에 뛸 수 있는 최대'다.
+        # (CLI parse_input.main과 같은 기준 — 여기가 어긋나면 웹만 경고를 놓친다)
+        streak = p.get("streak") or ""
+        cap = _max_games_streak(p["available_slots"], streak)
+        if p.get("min_games") and p["min_games"] > cap:
+            if streak == "no2":
+                cap_label = "연속금지 하에 가능한 최대"
+            elif streak == "ok3":
+                cap_label = "가용 슬롯수"
+            else:
+                cap_label = "3연속 없이 가능한 최대"
             warnings.append(
-                f"'{p['name']}': 최소게임수({p['min_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 수까지만 보장됨"
+                f"'{p['name']}': 최소게임수({p['min_games']}) > {cap_label}({cap}게임) — {cap}게임까지만 보장됨"
             )
 
     # 혼복희망 클램프 — CLI(parse_input.main)와 같은 방어를 웹에도 건다.
@@ -82,7 +93,9 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
     for sl in schedule_slots:
         n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
         total_seats += min(len(sl["courts"]), n_avail // 4) * 4
-    min_sum = sum(min(p["min_games"], len(p["available_slots"])) for p in players if p.get("min_games"))
+    min_sum = sum(
+        min(p["min_games"], _max_games_streak(p["available_slots"], p.get("streak") or ""))
+        for p in players if p.get("min_games"))
     if min_sum > total_seats:
         warnings.append(f"최소게임수 합계({min_sum})가 전체 배정 가능 자리({total_seats})를 넘습니다 — 일부는 보장 못 할 수 있음")
 

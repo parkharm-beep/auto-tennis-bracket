@@ -151,23 +151,41 @@ def hhmm_to_min(s: str) -> int:
     return h * 60 + m
 
 
-def _max_games_no3(slots: list) -> int:
-    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수 (schedule.py와 동일 기준).
+# 개인 '연속게임' 칸 → 연속으로 뛸 수 있는 최대 게임수.
+# 금지=1(한 게임 뛰면 반드시 쉼) / 빈칸=2(현행 기본) / 허용=3.
+# '허용'은 무제한이 아니다 — 6슬롯에 5게임 같은 보장을 위해 3연속까지만 연다.
+STREAK_RUN_LIMIT = {"": 2, "no2": 1, "ok3": 3}
 
-    예: 연속한 6슬롯이면 6게임이 아니라 4게임(2뛰고 1쉬는 패턴)이 최대다.
+
+def _max_games_streak(slots: list, streak: str = "") -> int:
+    """개인 연속게임 모드를 지키며 이 슬롯들에서 뛸 수 있는 최대 게임수.
+
+    모드는 '연속으로 몇 게임까지 뛸 수 있는가'(run limit)로 환원된다 —
+    금지(no2)=1 / 빈칸(기본)=2 / 허용(ok3)=3.
+    '허용'도 무제한이 아니라 **3연속까지**다(안내 문구와 동일한 의미).
     """
-    b0, b1, b2 = 0, None, None
+    limit = STREAK_RUN_LIMIT.get(streak, STREAK_RUN_LIMIT[""])
+    # best[k] = 지금까지 중 '마지막 슬롯이 k연속째'인 상태의 최대 게임수 (k=0은 그 슬롯을 안 뜀)
+    best = [0] + [None] * limit
     prev = None
     for s in sorted(slots):
         adj = prev is not None and s - prev == 30
-        rest_best = max(x for x in (b0, b1, b2) if x is not None)
-        if adj:
-            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
-        else:
-            n1, n2 = rest_best + 1, None
-        b0, b1, b2 = rest_best, n1, n2
-        prev = s
-    return max(x for x in (b0, b1, b2) if x is not None)
+        rest = max(x for x in best if x is not None)
+        nxt = [rest] + [None] * limit
+        for k in range(1, limit + 1):
+            if k == 1:
+                src = best[0] if adj else rest   # 인접이면 직전은 쉬었어야 새 연속이 시작된다
+            else:
+                src = best[k - 1] if adj else None
+            if src is not None:
+                nxt[k] = src + 1
+        best, prev = nxt, s
+    return max(x for x in best if x is not None)
+
+
+def _max_games_no3(slots: list) -> int:
+    """기존 호출부 호환용: 기본 3연속 금지 모드의 최대 게임수."""
+    return _max_games_streak(slots, "")
 
 
 def min_to_hhmm(v: int) -> str:
@@ -266,6 +284,19 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
                     if max_games is not None and mixed_wish > max_games:
                         raise ValueError(
                             f"'{name}': 혼복희망({mixed_wish})이 최대게임수({max_games})보다 큽니다")
+
+            streak = ""
+            if "연속게임" in col_idx:
+                raw = row[col_idx["연속게임"]]
+                normalized = "".join(str(raw).split()) if raw is not None else ""
+                if normalized:   # 공백만 든 셀(드롭다운을 스페이스로 지운 경우)은 빈칸 취급
+                    if normalized in {"금지", "연속금지", "불가", "안함"}:
+                        streak = "no2"
+                    elif normalized in {"허용", "연속허용", "가능", "연속게임가능"}:
+                        streak = "ok3"
+                    else:
+                        raise ValueError(
+                            f"'{name}': 연속게임은 '금지' 또는 '허용'만 입력하세요 (현재: '{raw}')")
         except (ValueError, TypeError) as e:
             errors.append(str(e))
             continue
@@ -282,6 +313,7 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             "max_games": max_games,
             "min_games": min_games,
             "mixed_wish": mixed_wish,
+            "streak": streak,
         })
         pid += 1
 
@@ -365,7 +397,7 @@ def clamp_mixed_wish(players: list[dict]) -> list[str]:
         w = p.get("mixed_wish")
         if not w:
             continue
-        cap = _max_games_no3(p.get("available_slots") or [])
+        cap = _max_games_streak(p.get("available_slots") or [], p.get("streak") or "")
         if p.get("max_games") is not None:
             cap = min(cap, p["max_games"])
         if w > cap:
@@ -457,9 +489,16 @@ def main():
             warnings.append(f"'{p['name']}': 가용 슬롯 없음 — 코트 운영 시간과 IN/OUT 범위 확인 필요")
         if p["max_games"] is not None and p["max_games"] > len(p["available_slots"]):
             warnings.append(f"'{p['name']}': 최대게임수({p['max_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 한도로 자연 제한됨")
-        if p.get("min_games") and p["min_games"] > _max_games_no3(p["available_slots"]):
-            cap = _max_games_no3(p["available_slots"])
-            warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > 3연속 없이 가능한 최대({cap}게임) — {cap}게임까지만 보장됨")
+        streak = p.get("streak") or ""
+        cap = _max_games_streak(p["available_slots"], streak)
+        if p.get("min_games") and p["min_games"] > cap:
+            if streak == "no2":
+                cap_label = "연속금지 하에 가능한 최대"
+            elif streak == "ok3":
+                cap_label = "3연속까지 허용 하에 가능한 최대"
+            else:
+                cap_label = "3연속 없이 가능한 최대"
+            warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > {cap_label}({cap}게임) — {cap}게임까지만 보장됨")
     warnings.extend(clamp_mixed_wish(players))
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
@@ -467,7 +506,9 @@ def main():
     for sl in schedule_slots:
         n_avail = sum(1 for p in players if sl["slot_start"] in p["available_slots"])
         total_seats += min(len(sl["courts"]), n_avail // 4) * 4
-    min_sum = sum(min(p["min_games"], _max_games_no3(p["available_slots"])) for p in players if p.get("min_games"))
+    min_sum = sum(
+        min(p["min_games"], _max_games_streak(p["available_slots"], p.get("streak") or ""))
+        for p in players if p.get("min_games"))
     if min_sum > total_seats:
         warnings.append(f"최소게임수 합계({min_sum})가 전체 배정 가능 자리({total_seats})를 넘습니다 — 일부는 보장 못 할 수 있음")
 

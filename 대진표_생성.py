@@ -249,6 +249,11 @@ def cmd_check(args) -> int:
     wish_list = [(p["name"], p["mixed_wish"]) for p in players if p.get("mixed_wish")]
     if wish_list:
         print(f"  혼복희망 {len(wish_list)}명: " + ", ".join(f"{n}={v}게임" for n, v in wish_list))
+    streak_labels = {"no2": "금지", "ok3": "허용"}
+    streak_list = [(p["name"], streak_labels[p["streak"]])
+                   for p in players if p.get("streak") in streak_labels]
+    if streak_list:
+        print(f"  연속게임 지정 {len(streak_list)}명: " + ", ".join(f"{n}={v}" for n, v in streak_list))
 
     print()
     if warnings:

@@ -23,6 +23,8 @@ W = dict(
     pair_repeat=20.0,
     consecutive=3.0,            # 2슬롯 연속은 '몰아서 하고 일찍 끝내기'에 유리 → 약하게만 억제
     three_consec=500.0,
+    consecutive_banned=100000.0, # 개인 '연속게임=금지': 2연속 하드필터 이중 안전장치
+    three_consec_allowed=20.0,   # 개인 '연속게임=허용': 3연속까지만 (4연속은 three_consec)
     game_balance=3.0,
     mixed_overuse=5.0,
     mixed_skill_rule_violation=1000.0,
@@ -90,6 +92,8 @@ G = dict(
                                 # 로컬 개선(선수 교환·경기 이동·kick)도 이 비용 때문에 절대 못 만든다.
                                 # 공백 해소(long_gap)·최소게임수(min_games_short)와도 안 바꾼다.
     two_streak=2.0,
+    two_streak_banned=100000.0, # 개인 '연속게임=금지': 2연속 사실상 하드
+    three_streak_allowed=40.0,  # 개인 '연속게임=허용': 3연속만 소프트 (4연속부터 three_streak 하드)
     mixed_match=20.0,           # 허용량 이내의 혼복 1경기당 페널티
     mixed_over_quota=220.0,     # 허용량을 넘는 혼복 (초과 경기수)^2 — 사실상 상한
     mixed_below_min=300.0,      # 최소 보장 판수에 못 미치는 혼복 (부족 경기수)^2 — 사실상 하한
@@ -150,25 +154,42 @@ def skill_tol(*people) -> int:
     return SKILL_TOL_HIGH if any(p["exp"] >= HIGH_EXP for p in people) else SKILL_TOL_LOW
 
 
-@lru_cache(maxsize=None)
-def max_games_no3(slots: tuple) -> int:
-    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수.
+# 개인 '연속게임' 칸 → 연속으로 뛸 수 있는 최대 게임수.
+# 금지=1(한 게임 뛰면 반드시 쉼) / 빈칸=2(현행 기본) / 허용=3.
+# '허용'은 무제한이 아니다 — 6슬롯에 5게임 같은 보장을 위해 3연속까지만 연다.
+STREAK_RUN_LIMIT = {"": 2, "no2": 1, "ok3": 3}
 
-    예: 연속한 6슬롯이면 6게임이 아니라 4게임(2뛰고 1쉬는 패턴)이 최대다.
-    최소게임수 보장 한도와 '지금 안 태우면 보장이 깨지는가' 판정의 공통 기준.
+
+@lru_cache(maxsize=None)
+def max_games_streak(slots: tuple, streak: str = "") -> int:
+    """개인 연속게임 모드를 지키며 이 슬롯들에서 뛸 수 있는 최대 게임수.
+
+    모드는 '연속으로 몇 게임까지 뛸 수 있는가'(run limit)로 환원된다 —
+    금지(no2)=1 / 빈칸(기본)=2 / 허용(ok3)=3.
+    '허용'도 무제한이 아니라 **3연속까지**다(안내 문구와 동일한 의미).
     """
-    b0, b1, b2 = 0, None, None   # 쉼(연속 0) / 1연속째 / 2연속째 상태의 최고 게임수
+    limit = STREAK_RUN_LIMIT.get(streak, STREAK_RUN_LIMIT[""])
+    # best[k] = 지금까지 중 '마지막 슬롯이 k연속째'인 상태의 최대 게임수 (k=0은 그 슬롯을 안 뜀)
+    best = [0] + [None] * limit
     prev = None
     for s in sorted(slots):
         adj = prev is not None and s - prev == 30
-        rest_best = max(x for x in (b0, b1, b2) if x is not None)
-        if adj:
-            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
-        else:
-            n1, n2 = rest_best + 1, None
-        b0, b1, b2 = rest_best, n1, n2
-        prev = s
-    return max(x for x in (b0, b1, b2) if x is not None)
+        rest = max(x for x in best if x is not None)
+        nxt = [rest] + [None] * limit
+        for k in range(1, limit + 1):
+            if k == 1:
+                src = best[0] if adj else rest   # 인접이면 직전은 쉬었어야 새 연속이 시작된다
+            else:
+                src = best[k - 1] if adj else None
+            if src is not None:
+                nxt[k] = src + 1
+        best, prev = nxt, s
+    return max(x for x in best if x is not None)
+
+
+def max_games_no3(slots: tuple) -> int:
+    """기존 호출부 호환용: 기본 3연속 금지 모드의 최대 게임수."""
+    return max_games_streak(slots, "")
 
 
 def eff_min_games(p: dict) -> int:
@@ -181,7 +202,8 @@ def eff_min_games(p: dict) -> int:
     mg = p.get("min_games")
     if not mg:
         return 0
-    return min(mg, max_games_no3(tuple(p.get("available_slots") or ())))
+    return min(mg, max_games_streak(
+        tuple(p.get("available_slots") or ()), p.get("streak") or ""))
 
 
 def min_games_critical(p: dict, slot_start: int, state: dict) -> bool:
@@ -195,7 +217,7 @@ def min_games_critical(p: dict, slot_start: int, state: dict) -> bool:
     if deficit <= 0:
         return False
     later = tuple(s for s in (p.get("available_slots") or ()) if s > slot_start)
-    return max_games_no3(later) < deficit
+    return max_games_streak(later, p.get("streak") or "") < deficit
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -504,6 +526,25 @@ def is_three_streak(p_id: str, slot_start: int, state: dict) -> bool:
     return (slot_start - 30) in slots and (slot_start - 60) in slots
 
 
+def is_four_streak(p_id: str, slot_start: int, state: dict) -> bool:
+    slots = set(state["player_slots"][p_id])
+    return all((slot_start - d) in slots for d in (30, 60, 90))
+
+
+def blocks_by_streak(p: dict, slot_start: int, state: dict) -> bool:
+    """이 사람을 이 슬롯에 넣으면 개인 연속 규칙(하드)을 깨는가.
+
+    STREAK_RUN_LIMIT과 같은 기준 — 금지=2연속부터, 기본=3연속부터, 허용=4연속부터 차단.
+    ('허용'은 3연속까지라는 뜻이지 무제한이 아니다)
+    """
+    mode = p.get("streak") or ""
+    if mode == "ok3":
+        return is_four_streak(p["id"], slot_start, state)
+    if mode == "no2":
+        return is_two_streak(p["id"], slot_start, state)
+    return is_three_streak(p["id"], slot_start, state)
+
+
 def match_cost(
     team1: tuple[dict, dict],
     team2: tuple[dict, dict],
@@ -570,10 +611,14 @@ def match_cost(
         avg_games = 0.0
 
     for p in all_players:
+        mode = p.get("streak") or ""
         if is_two_streak(p["id"], slot_start, state):
-            cost += W["consecutive"]
+            cost += W["consecutive_banned"] if mode == "no2" else W["consecutive"]
         if is_three_streak(p["id"], slot_start, state):
-            cost += W["three_consec"]
+            if mode == "ok3" and not is_four_streak(p["id"], slot_start, state):
+                cost += W["three_consec_allowed"]
+            else:
+                cost += W["three_consec"]
 
         if multi_club:
             # 교류전: 게임수 균형은 (클럽, 성별) 그룹 내부에서만 평가
@@ -676,10 +721,10 @@ def enumerate_candidates(
     top_k: int = 10,
     court_name: str = "",
 ) -> list[tuple[float, str, tuple, tuple]]:
-    # 3연속 출전은 하드 금지 — 2게임 연속했으면 반드시 쉰다. 예외 없음.
-    # (최소게임수 보장은 min_games_critical이 3연속 금지를 반영해 더 일찍
-    #  발동하므로, 3연속을 허용하는 대신 미리 태우는 쪽으로 지킨다)
-    working_pool = [p for p in pool if not is_three_streak(p["id"], slot_start, state)]
+    # 기본 모드는 3연속 하드 금지, 개인 'no2'는 2연속도 금지한다.
+    # 'ok3'로 명시한 사람만 개인 면제. 최소게임수 보장은 min_games_critical이
+    # 각 개인 모드를 반영해 더 일찍 발동한다.
+    working_pool = [p for p in pool if not blocks_by_streak(p, slot_start, state)]
     if len(working_pool) < 4:
         return []   # 3연속 없이 코트를 채울 수 없으면 이 코트는 비운다
 
@@ -920,13 +965,13 @@ def _hard_filter(
     slot_start: int,
     state: dict,
 ) -> list[tuple]:
-    """3연속 출전이 생기는 후보를 무조건 제거 — 예외 없는 하드 규칙.
+    """개인 연속게임 하드 규칙을 깨는 후보를 무조건 제거.
 
     (enumerate_candidates가 안전 풀만 쓰므로 평소엔 통과만 하는 이중 안전장치)
     """
     return [
         entry for entry in cands
-        if not any(is_three_streak(p["id"], slot_start, state)
+        if not any(blocks_by_streak(p, slot_start, state)
                    for p in list(entry[2]) + list(entry[3]))
     ]
 
@@ -969,7 +1014,7 @@ def pick_match(
 # 전체 대진표 평가 (시드 선택 + 로컬 개선 공통 목적함수)
 # ---------------------------------------------------------------------------
 
-def player_timing_cost(slots_sorted: list[int], eff_in: int) -> float:
+def player_timing_cost(slots_sorted: list[int], eff_in: int, streak: str = "") -> float:
     """한 사람의 '시간표 품질' 비용.
 
     - 도착 후 첫 경기까지의 대기 (일찍 온 사람이 일찍 끝나도록)
@@ -1005,11 +1050,17 @@ def player_timing_cost(slots_sorted: list[int], eff_in: int) -> float:
     if free_units > 0:
         cost += G["idle_sq"] * free_units ** 2
 
+    # 연속 구간 길이(run)로 판정한다. 기본 모드(빈칸)의 비용은 종전과 완전히 동일하고,
+    # '허용'만 3연속을 소프트로 풀되 4연속부터는 기본과 같은 하드 비용을 문다.
+    run = 0
     for i in range(len(slots_sorted)):
-        if i >= 2 and slots_sorted[i - 1] == slots_sorted[i] - 30 and slots_sorted[i - 2] == slots_sorted[i] - 60:
+        run = run + 1 if (i >= 1 and slots_sorted[i - 1] == slots_sorted[i] - 30) else 1
+        if run >= 4:
             cost += G["three_streak"]
-        elif i >= 1 and slots_sorted[i - 1] == slots_sorted[i] - 30:
-            cost += G["two_streak"]
+        elif run == 3:
+            cost += G["three_streak_allowed"] if streak == "ok3" else G["three_streak"]
+        elif run == 2:
+            cost += G["two_streak_banned"] if streak == "no2" else G["two_streak"]
 
     return cost
 
@@ -1183,7 +1234,8 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
     eff_in = state.get("eff_in", {})
     for p in players:
         pid = p["id"]
-        score += player_timing_cost(sorted(state["player_slots"][pid]), eff_in.get(pid, p["in_min"]))
+        score += player_timing_cost(
+            sorted(state["player_slots"][pid]), eff_in.get(pid, p["in_min"]), p.get("streak") or "")
 
     # 페어 중복 + 지난 대진표 반복
     for k, c in state["pair_count"].items():
@@ -1380,7 +1432,9 @@ class Refiner:
         return (p["gender"], p.get("club", "")) if self.multi else p["gender"]
 
     def timing(self, pid, slots) -> float:
-        return player_timing_cost(slots, self.eff_in.get(pid, self.pbid[pid]["in_min"]))
+        return player_timing_cost(
+            slots, self.eff_in.get(pid, self.pbid[pid]["in_min"]),
+            self.pbid[pid].get("streak") or "")
 
     def quality(self, m) -> float:
         return match_quality_cost(m, self.pbid, self.multi, self.cpref)

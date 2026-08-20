@@ -17,6 +17,7 @@ THRESHOLDS = dict(
     game_gap_group=2,
     pair_dup_rate=0.05,
     three_consec_per_player=0,  # 3연속 출전은 하드 금지 — 1건이라도 나오면 RETRY (알고리즘 버그)
+    two_consec_banned=0,        # 개인 '연속게임=금지'의 2연속은 하드 금지
     team_skill_avg=3.0,
     team_skill_max=7,
     mixed_skill_violations=0,
@@ -35,20 +36,41 @@ def pair_key(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a < b else (b, a)
 
 
-def max_games_no3(slots: list) -> int:
-    """이 슬롯들에서 '3연속 출전 금지'를 지키며 뛸 수 있는 최대 게임수 (schedule.py와 동일 기준)."""
-    b0, b1, b2 = 0, None, None
+# 개인 '연속게임' 칸 → 연속으로 뛸 수 있는 최대 게임수.
+# 금지=1(한 게임 뛰면 반드시 쉼) / 빈칸=2(현행 기본) / 허용=3.
+# '허용'은 무제한이 아니다 — 6슬롯에 5게임 같은 보장을 위해 3연속까지만 연다.
+STREAK_RUN_LIMIT = {"": 2, "no2": 1, "ok3": 3}
+
+
+def max_games_streak(slots: list, streak: str = "") -> int:
+    """개인 연속게임 모드를 지키며 이 슬롯들에서 뛸 수 있는 최대 게임수.
+
+    모드는 '연속으로 몇 게임까지 뛸 수 있는가'(run limit)로 환원된다 —
+    금지(no2)=1 / 빈칸(기본)=2 / 허용(ok3)=3.
+    '허용'도 무제한이 아니라 **3연속까지**다(안내 문구와 동일한 의미).
+    """
+    limit = STREAK_RUN_LIMIT.get(streak, STREAK_RUN_LIMIT[""])
+    # best[k] = 지금까지 중 '마지막 슬롯이 k연속째'인 상태의 최대 게임수 (k=0은 그 슬롯을 안 뜀)
+    best = [0] + [None] * limit
     prev = None
     for s in sorted(slots):
         adj = prev is not None and s - prev == 30
-        rest_best = max(x for x in (b0, b1, b2) if x is not None)
-        if adj:
-            n1, n2 = b0 + 1, (b1 + 1 if b1 is not None else None)
-        else:
-            n1, n2 = rest_best + 1, None
-        b0, b1, b2 = rest_best, n1, n2
-        prev = s
-    return max(x for x in (b0, b1, b2) if x is not None)
+        rest = max(x for x in best if x is not None)
+        nxt = [rest] + [None] * limit
+        for k in range(1, limit + 1):
+            if k == 1:
+                src = best[0] if adj else rest   # 인접이면 직전은 쉬었어야 새 연속이 시작된다
+            else:
+                src = best[k - 1] if adj else None
+            if src is not None:
+                nxt[k] = src + 1
+        best, prev = nxt, s
+    return max(x for x in best if x is not None)
+
+
+def max_games_no3(slots: list) -> int:
+    """기존 호출부 호환용: 기본 3연속 금지 모드의 최대 게임수."""
+    return max_games_streak(slots, "")
 
 
 def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
@@ -124,7 +146,9 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         mg = s.get("min_games")
         if not mg:
             continue
-        cap = max_games_no3(players_by_id.get(s["id"], {}).get("available_slots") or [])
+        player = players_by_id.get(s["id"], {})
+        streak = player.get("streak") or ""
+        cap = max_games_streak(player.get("available_slots") or [], streak)
         eff = min(mg, cap)
         if s["games"] < eff:
             min_games_violations.append(s["name"])
@@ -134,10 +158,16 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                 "msg": f"{s['name']}: 최소게임수 {mg} 미달 — 실제 {s['games']}게임 배정됨 (보장 {eff}게임)",
             })
         if mg > cap:
+            if streak == "no2":
+                cap_label = "연속금지 하에 가능한 최대"
+            elif streak == "ok3":
+                cap_label = "3연속까지 허용 하에 가능한 최대"
+            else:
+                cap_label = "3연속 없이 가능한 최대"
             issues.append({
                 "severity": "low",
                 "code": "min_games_capped",
-                "msg": f"{s['name']}: 최소게임수 {mg} > 3연속 없이 가능한 최대 {cap}게임 — {eff}게임까지만 보장 (입력 구조상 한계)",
+                "msg": f"{s['name']}: 최소게임수 {mg} > {cap_label} {cap}게임 — {eff}게임까지만 보장 (입력 구조상 한계)",
             })
     scores["min_games_violations"] = min_games_violations
 
@@ -260,22 +290,42 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["same_club_matches"] = same_club_matches
 
     three_consec, two_consec = 0, 0
+    two_consec_banned, three_consec_allowed = 0, 0
     three_consec_per_player = defaultdict(int)
     for s in player_stats:
         slots = sorted(s["slots_played"])
+        streak = players_by_id.get(s["id"], {}).get("streak") or ""
         for i in range(len(slots)):
-            if i >= 2 and slots[i - 1] == slots[i] - 30 and slots[i - 2] == slots[i] - 60:
-                three_consec += 1
-                three_consec_per_player[s["name"]] += 1
+            if (streak == "no2" and i >= 1
+                    and slots[i - 1] == slots[i] - 30):
+                two_consec_banned += 1
                 issues.append({
                     "severity": "high",
-                    "code": "three_consec",
-                    "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — 금지 규칙 위반 (알고리즘 버그)",
+                    "code": "two_consec_banned",
+                    "msg": f"{s['name']}: 연속 출전 ({min_to_hhmm(slots[i-1])}~{min_to_hhmm(slots[i]+30)}) — '연속게임 금지' 위반",
                 })
+            if i >= 2 and slots[i - 1] == slots[i] - 30 and slots[i - 2] == slots[i] - 60:
+                if streak == "ok3":
+                    three_consec_allowed += 1
+                    issues.append({
+                        "severity": "low",
+                        "code": "three_consec_allowed",
+                        "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — '연속게임 허용' 적용",
+                    })
+                else:
+                    three_consec += 1
+                    three_consec_per_player[s["name"]] += 1
+                    issues.append({
+                        "severity": "high",
+                        "code": "three_consec",
+                        "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — 금지 규칙 위반 (알고리즘 버그)",
+                    })
             elif i >= 1 and slots[i - 1] == slots[i] - 30:
                 two_consec += 1
     scores["three_consec"] = three_consec
     scores["two_consec"] = two_consec
+    scores["two_consec_banned"] = two_consec_banned
+    scores["three_consec_allowed"] = three_consec_allowed
     scores["three_consec_max_per_player"] = max(three_consec_per_player.values(), default=0)
 
     # 경기 사이 긴 공백 (1시간 이상 쉬었다 다시 나오는 경우) + 체류/대기 시간
@@ -478,6 +528,8 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         verdict = "RETRY"
     if scores["three_consec_max_per_player"] > THRESHOLDS["three_consec_per_player"]:
         verdict = "RETRY"
+    if scores["two_consec_banned"] > THRESHOLDS["two_consec_banned"]:
+        verdict = "RETRY"
     # 코트 대비 인원이 많으면 공백은 구조적으로 불가피 — 참가자 대비 비율로만 판정한다.
     if scores["long_gap_rate"] > THRESHOLDS["long_gap_rate"]:
         verdict = "RETRY"
@@ -531,6 +583,7 @@ def print_report(review: dict) -> None:
         print(f"지난 대진표 대비 반복 페어: {s.get('history_repeat_pairs', 0)}쌍 "
               f"(비교 대상 {s['history_pairs_available']}쌍)")
     print(f"연속 출전: 2슬롯연속 {s['two_consec']}회, 3슬롯연속 {s['three_consec']}회")
+    print(f"개인 연속규칙: 연속금지 위반 {s.get('two_consec_banned', 0)}회 / 연속허용자 3연속 {s.get('three_consec_allowed', 0)}회")
     print(f"1시간 이상 공백: {s['long_gaps']}건 / {s['long_gap_players']}명 "
           f"({s['long_gap_rate']*100:.0f}%), 최장 {s['long_gap_worst']}분")
     print(f"총 대기시간(도착~마지막경기 중 안 뛰는 시간): {s['total_idle_min']}분, 마지막 경기 종료 {s['last_match_end']}")

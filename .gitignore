@@ -30,3 +30,8 @@ Thumbs.db
 node_modules/
 package-lock.json
 .gstack/
+
+# 에이전트 런타임 상태 (web/ 아래에 생기면 gh-pages로 딸려간다)
+.omc/
+.codex/
+.agents/**/__pycache__/
