@@ -128,9 +128,55 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["group_gaps"] = group_gaps
     scores["max_group_gap"] = max((g for _, g in group_gaps), default=0)
 
+    # ── 씨드(고정 배치) ──────────────────────────────────────────────────
+    # 사용자가 '씨드대진' 시트에 직접 적어 둔 자리가 결과에 그대로 남아 있는지 확인한다.
+    # 자리를 못 채운 경우는 알고리즘 버그가 아니라 입력이 구조적으로 불가능한 것이므로
+    # (그 시간에 그 조합을 만들 인원이 없음) RETRY 사유로 삼지 않고 크게 보고만 한다.
+    pins = parsed.get("pins") or []
+    pin_slots_by_pid: dict = {}
+    for pin in pins:
+        for _pid in [x for x in list(pin.get("team1") or []) + list(pin.get("team2") or []) if x]:
+            pin_slots_by_pid.setdefault(_pid, set()).add(pin["slot_start"])
+    match_at = {(m["slot_start"], str(m["court"])): m for m in matches}
+    seed_seats, seed_kept = 0, 0
+    for pin in pins:
+        m = match_at.get((pin["slot_start"], str(pin["court"])))
+        for side in ("team1", "team2"):
+            for pid in (pin.get(side) or []):
+                if not pid:
+                    continue
+                seed_seats += 1
+                name = players_by_id.get(pid, {}).get("name", pid)
+                if m is not None and pid in m[side]:
+                    seed_kept += 1
+                else:
+                    issues.append({
+                        "severity": "high",
+                        "code": "seed_not_kept",
+                        "msg": f"{min_to_hhmm(pin['slot_start'])} {pin['court']}코트: 씨드로 고정한 "
+                               f"'{name}'을(를) 배정하지 못했습니다 — 그 자리를 채울 조합이 없습니다"
+                               f" (그 시간대 인원·성별 구성 확인 필요)",
+                    })
+    scores["seed_seats"] = seed_seats
+    scores["seed_seats_kept"] = seed_kept
+    scores["seed_matches"] = len(pins)
+
     max_games_violations = []
     for s in player_stats:
         if s.get("max_games") is not None and s["games"] > s["max_games"]:
+            # 씨드만으로 이미 최대게임수를 넘었다면 그건 사용자가 그렇게 지정한 것이다.
+            # (입력 검사에서 경고했다) 알고리즘 버그로 몰아 RETRY를 돌리면 끝나지 않는다.
+            # 단 **면제는 씨드 자리 수까지만** — 그보다 더 배정됐다면 그 초과분은 알고리즘의
+            # 잘못이므로 씨드를 핑계로 가리면 진짜 버그를 놓친다.
+            n_pinned = len(pin_slots_by_pid.get(s["id"], ()))
+            if n_pinned > s["max_games"] and s["games"] <= n_pinned:
+                issues.append({
+                    "severity": "medium",
+                    "code": "max_games_seed",
+                    "msg": f"{s['name']}: 최대게임수 {s['max_games']} 초과({s['games']}게임) — "
+                           f"씨드 고정 {n_pinned}자리 때문 (씨드가 우선)",
+                })
+                continue
             max_games_violations.append(s["name"])
             issues.append({
                 "severity": "high",
@@ -291,19 +337,33 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
 
     three_consec, two_consec = 0, 0
     two_consec_banned, three_consec_allowed = 0, 0
+    three_consec_seed, two_consec_banned_seed = 0, 0
     three_consec_per_player = defaultdict(int)
     for s in player_stats:
         slots = sorted(s["slots_played"])
         streak = players_by_id.get(s["id"], {}).get("streak") or ""
+        # 씨드로 고정된 슬롯 때문에 생긴 연속은 사용자가 그렇게 정한 결과다. 알고리즘 버그
+        # (RETRY)와 섞으면 고칠 수 없는 것을 계속 다시 돌리게 되므로 따로 센다.
+        # 단 **그 구간이 전부 씨드일 때만** 면제한다 — 하나만 걸쳐도 면제하면, 씨드가 아닌
+        # 슬롯을 알고리즘이 잘못 붙여 만든 연속까지 가려 버린다(피할 수 있었던 위반이다).
+        seeded = pin_slots_by_pid.get(s["id"], frozenset())
         for i in range(len(slots)):
             if (streak == "no2" and i >= 1
                     and slots[i - 1] == slots[i] - 30):
-                two_consec_banned += 1
-                issues.append({
-                    "severity": "high",
-                    "code": "two_consec_banned",
-                    "msg": f"{s['name']}: 연속 출전 ({min_to_hhmm(slots[i-1])}~{min_to_hhmm(slots[i]+30)}) — '연속게임 금지' 위반",
-                })
+                if {slots[i - 1], slots[i]} <= seeded:
+                    two_consec_banned_seed += 1
+                    issues.append({
+                        "severity": "medium",
+                        "code": "two_consec_banned_seed",
+                        "msg": f"{s['name']}: 연속 출전 ({min_to_hhmm(slots[i-1])}~{min_to_hhmm(slots[i]+30)}) — 씨드 고정 때문 ('연속게임 금지'보다 씨드가 우선)",
+                    })
+                else:
+                    two_consec_banned += 1
+                    issues.append({
+                        "severity": "high",
+                        "code": "two_consec_banned",
+                        "msg": f"{s['name']}: 연속 출전 ({min_to_hhmm(slots[i-1])}~{min_to_hhmm(slots[i]+30)}) — '연속게임 금지' 위반",
+                    })
             if i >= 2 and slots[i - 1] == slots[i] - 30 and slots[i - 2] == slots[i] - 60:
                 if streak == "ok3":
                     three_consec_allowed += 1
@@ -311,6 +371,13 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                         "severity": "low",
                         "code": "three_consec_allowed",
                         "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — '연속게임 허용' 적용",
+                    })
+                elif {slots[i - 2], slots[i - 1], slots[i]} <= seeded:
+                    three_consec_seed += 1
+                    issues.append({
+                        "severity": "medium",
+                        "code": "three_consec_seed",
+                        "msg": f"{s['name']}: 3슬롯 연속 출전 ({min_to_hhmm(slots[i-2])}~{min_to_hhmm(slots[i]+30)}) — 씨드 고정 때문 (씨드가 우선)",
                     })
                 else:
                     three_consec += 1
@@ -326,6 +393,8 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["two_consec"] = two_consec
     scores["two_consec_banned"] = two_consec_banned
     scores["three_consec_allowed"] = three_consec_allowed
+    scores["three_consec_seed"] = three_consec_seed
+    scores["two_consec_banned_seed"] = two_consec_banned_seed
     scores["three_consec_max_per_player"] = max(three_consec_per_player.values(), default=0)
 
     # 경기 사이 긴 공백 (1시간 이상 쉬었다 다시 나오는 경우) + 체류/대기 시간
@@ -502,6 +571,11 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     gender_balanced = males_total >= 4 and females_total >= 4
 
     verdict = "PASS"
+    # 씨드 자리를 못 채웠으면 PASS가 아니다. 사용자가 명시적으로 고정한 자리가 빠진 대진표는
+    # 요구를 못 지킨 것이고, 시드를 바꿔 다시 뽑으면 채워지는 경우도 있다(인원이 빠듯한 슬롯).
+    # 다만 재시도로 못 고치는 구조적 입력일 수도 있어, 이슈 메시지에 무엇을 확인해야 하는지 적는다.
+    if scores.get("seed_seats", 0) > scores.get("seed_seats_kept", 0):
+        verdict = "RETRY"
     if scores["max_games_violations"]:
         verdict = "RETRY"
     if scores["min_games_violations"]:
@@ -590,6 +664,12 @@ def print_report(review: dict) -> None:
     print(f"팀 구력차: 평균 {s['team_skill_avg']}, 최대 {s['team_skill_max']}")
     print(f"혼복 비율: {s['mixed_ratio']*100:.1f}%")
     print(f"혼복 규칙 위반: {s['mixed_skill_violations']}건")
+    if s.get("seed_seats"):
+        print(f"씨드 고정: {s['seed_seats_kept']}/{s['seed_seats']}자리 반영 (경기 {s['seed_matches']}개)"
+              + ("" if s["seed_seats_kept"] == s["seed_seats"] else "  ← 미반영 있음, 아래 이슈 확인"))
+        if s.get("three_consec_seed") or s.get("two_consec_banned_seed"):
+            print(f"  (씨드 때문에 생긴 연속 출전: 3연속 {s.get('three_consec_seed', 0)}회 / "
+                  f"연속금지 위반 {s.get('two_consec_banned_seed', 0)}회 — 씨드가 우선하므로 그대로 둠)")
     if s.get("min_games_violations"):
         print(f"최소게임수 미달: {', '.join(s['min_games_violations'])}")
     if s.get("mixed_wish_short"):

@@ -232,6 +232,15 @@ function handleDone({ xlsx, review, summary, elapsed }) {
           : ""
       }
       ${
+        summary.seed_seats
+          ? `<p><strong>씨드 고정</strong> ${summary.seed_seats_kept}/${summary.seed_seats}자리 반영 (경기 ${summary.seed_matches}개)${
+              summary.seed_seats_kept === summary.seed_seats
+                ? " — 적어 두신 자리가 모두 그대로 들어갔습니다"
+                : " <b>— 일부 자리를 채우지 못했습니다. 아래 이슈를 확인하세요</b>"
+            }</p>`
+          : ""
+      }
+      ${
         summary.couples_present
           ? `<p><strong>부부 페어</strong> 이번 주 참가 ${summary.couples_present}쌍 (${summary.members_uploaded ? "업로드한 설정" : "기본 설정"}) — 혼복 같은팀: 원함 ${(s.couple_want_paired || []).length ? (s.couple_want_paired || []).join(", ") : "없음"} / 피함인데 발생 ${(s.couple_avoid_paired || []).length ? (s.couple_avoid_paired || []).join(", ") : "0건"} · 종료 30분 초과 ${(s.couple_finish_over30 || []).length}쌍${(s.couple_gap30_missed || []).length ? ` · 종료 30분차이 미달성 ${(s.couple_gap30_missed || []).join(", ")}` : ""}</p>`
           : ""

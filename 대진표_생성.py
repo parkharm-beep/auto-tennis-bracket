@@ -255,6 +255,18 @@ def cmd_check(args) -> int:
     if streak_list:
         print(f"  연속게임 지정 {len(streak_list)}명: " + ", ".join(f"{n}={v}" for n, v in streak_list))
 
+    pins = data.get("pins") or []
+    if pins:
+        seats = sum(1 for pin in pins for side in ("team1", "team2")
+                    for pid in (pin.get(side) or []) if pid)
+        by_name = {p["id"]: p["name"] for p in players}
+        print(f"  씨드 고정 {seats}자리 (경기 {len(pins)}개) - 나머지 자리만 알고리즘이 채웁니다")
+        for pin in sorted(pins, key=lambda x: (x["slot_start"], str(x["court"]))):
+            t1 = " ".join(by_name.get(i, "?") for i in (pin.get("team1") or []) if i)
+            t2 = " ".join(by_name.get(i, "?") for i in (pin.get("team2") or []) if i)
+            hh = f"{pin['slot_start'] // 60:02d}:{pin['slot_start'] % 60:02d}"
+            print(f"    - {hh} {pin['court']}코트: {t1 or '(빈칸)'} vs {t2 or '(빈칸)'}")
+
     print()
     if warnings:
         print(f"[결과] O 형식 오류 없음 - 다만 경고 {len(warnings)}건을 확인하세요 (위 [경고] 참조).")

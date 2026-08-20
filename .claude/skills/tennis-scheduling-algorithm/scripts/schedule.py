@@ -440,7 +440,102 @@ def couple_finish_cost(last_a, last_b, gap=None) -> float:
     return G["couple_finish_gap"] * u * u if u > 0 else 0.0
 
 
-def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couples=None) -> dict:
+# ---------------------------------------------------------------------------
+# 씨드(고정 배치) — 입력 양식 '씨드대진' 시트에서 사용자가 직접 정해 둔 자리.
+# 알고리즘은 그 자리를 '이미 정해진 것'으로 받고 나머지만 채운다.
+# ---------------------------------------------------------------------------
+
+def pin_ids(pin: dict | None) -> frozenset:
+    """이 고정 배치에 이름이 적힌 선수 id들."""
+    if not pin:
+        return frozenset()
+    return frozenset(x for x in list(pin.get("team1") or []) + list(pin.get("team2") or []) if x)
+
+
+def build_pin_index(pins, players: list[dict]) -> tuple[dict, dict, dict]:
+    """pins → ((슬롯, 코트) → pin, 선수id → 고정된 슬롯 집합, (슬롯, 선수id) → 고정 코트).
+
+    두 번째 값이 '예약'이다. 고정 자리는 뒤 슬롯에 있어도 지금 결정에 영향을 줘야 한다 —
+    예약을 안 보면 앞 슬롯을 자유롭게 채운 뒤 뒤늦게 고정이 붙으면서 연속게임 한도를
+    넘기거나 최대게임수를 초과한다. (입력 검증이 먼저 걸러 주지만 여기서도 명단 밖 id는 무시)
+
+    세 번째 값은 **같은 슬롯 안에서의 예약**이다. 그리디는 한 슬롯의 코트를 순서대로 채우는데,
+    뒤 코트에 고정된 사람을 앞 코트가 먼저 데려가 버리면 정작 고정 자리를 못 채운다
+    (가용 인원이 빠듯한 슬롯에서 실제로 일어난다). 그래서 '이 슬롯에서 다른 코트에 고정된
+    사람'은 이 코트 후보에서 아예 뺀다.
+    """
+    valid = {p["id"] for p in players}
+    pin_map, pin_slots, pin_court_of = {}, {}, {}
+    for pin in pins or []:
+        ids = frozenset(i for i in pin_ids(pin) if i in valid)
+        if not ids:
+            continue
+        court = str(pin["court"])
+        pin_map[(pin["slot_start"], court)] = pin
+        for pid in ids:
+            pin_slots.setdefault(pid, set()).add(pin["slot_start"])
+            pin_court_of[(pin["slot_start"], pid)] = court
+    return pin_map, pin_slots, pin_court_of
+
+
+def pins_ahead(pid: str, slot_start: int, state: dict) -> int:
+    """아직 오지 않은(이 슬롯보다 뒤의) 고정 자리 수 — 최대게임수 여유에서 미리 뺀다."""
+    return sum(1 for s in state.get("pin_slots", {}).get(pid, ()) if s > slot_start)
+
+
+def _require_only(candidates: list, require_ids: frozenset) -> list:
+    """씨드로 고정된 선수가 모두 들어간 후보만 남긴다."""
+    if not require_ids:
+        return candidates
+    return [c for c in candidates
+            if require_ids <= ({p["id"] for p in c[2]} | {p["id"] for p in c[3]})]
+
+
+def _orient_for_pin(cands: list, pin: dict) -> list:
+    """씨드가 지정한 '어느 팀인지'까지 맞는 후보만, 팀 방향을 맞춰서 남긴다.
+
+    후보 생성은 (팀1, 팀2)를 한 방향으로만 만들지만 두 팀은 대칭이므로 뒤집으면 맞는
+    후보도 살린다 — 안 그러면 쓸 수 있는 조합의 절반을 그냥 버린다.
+    """
+    need1 = frozenset(x for x in (pin.get("team1") or []) if x)
+    need2 = frozenset(x for x in (pin.get("team2") or []) if x)
+    out = []
+    for cost, mtype, t1, t2 in cands:
+        ids1 = {p["id"] for p in t1}
+        ids2 = {p["id"] for p in t2}
+        if need1 <= ids1 and need2 <= ids2:
+            out.append((cost, mtype, t1, t2))
+        elif need1 <= ids2 and need2 <= ids1:
+            out.append((cost, mtype, t2, t1))
+    return out
+
+
+def _arrange_seats(team: tuple, want) -> tuple:
+    """씨드에 적힌 칸 위치 그대로 앉힌다.
+
+    결과 엑셀이 사용자가 적은 모양과 같아야 '내가 고정한 자리가 그대로인지'를 눈으로
+    바로 확인할 수 있다. 뭔가 어긋나면(있을 수 없지만) 원래 순서를 그대로 돌려준다.
+    """
+    fixed = {i: pid for i, pid in enumerate(list(want or [])[:2]) if pid}
+    if not fixed:
+        return team
+    by_id = {p["id"]: p for p in team}
+    if any(pid not in by_id for pid in fixed.values()):
+        return team
+    seats = [None, None]
+    for i, pid in fixed.items():
+        seats[i] = by_id[pid]
+    rest = [p for p in team if p["id"] not in set(fixed.values())]
+    for i in (0, 1):
+        if seats[i] is None:
+            if not rest:
+                return team
+            seats[i] = rest.pop(0)
+    return tuple(seats)
+
+
+def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couples=None,
+               pin_slots=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
 
@@ -490,6 +585,8 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         # 그 성별의 단성 복식 재대결은 구조적으로 불가피하다(여자 4명 → 1).
         "quad_alt": {g: math.comb(n, 4) if n >= 4 else 0
                      for g, n in (("M", n_m_total), ("F", n_f_total))},
+        # 씨드 예약: 이 사람이 고정으로 들어갈 슬롯들(아직 안 채워진 뒤 슬롯 포함)
+        "pin_slots": {k: frozenset(v) for k, v in (pin_slots or {}).items()},
     }
 
 
@@ -531,18 +628,38 @@ def is_four_streak(p_id: str, slot_start: int, state: dict) -> bool:
     return all((slot_start - d) in slots for d in (30, 60, 90))
 
 
+def streak_run_len(p_id: str, slot_start: int, state: dict) -> int:
+    """slot_start에 뛴다고 볼 때 그 슬롯이 속하는 연속(30분 간격) 구간의 길이.
+
+    이미 배정된 슬롯뿐 아니라 **씨드로 예약된 슬롯**까지 함께 본다. 예약을 안 보면
+    앞 슬롯을 자유롭게 채운 뒤 뒤늦게 고정 자리가 붙으면서 연속 한도를 넘긴다.
+    앞뒤를 모두 훑는 이유도 그것이다 — 고정 자리는 뒤 슬롯에 있을 수 있다.
+    (씨드가 없으면 그리디가 시간순으로 채우므로 뒤쪽은 항상 비어 있어
+     결과는 종전의 '뒤돌아보기'와 완전히 같다)
+    """
+    taken = set(state["player_slots"][p_id])
+    taken |= state.get("pin_slots", {}).get(p_id, frozenset())
+    taken.discard(slot_start)   # 제안 슬롯 자신은 아래에서 1로 센다
+    n = 1
+    s = slot_start - 30
+    while s in taken:
+        n += 1
+        s -= 30
+    s = slot_start + 30
+    while s in taken:
+        n += 1
+        s += 30
+    return n
+
+
 def blocks_by_streak(p: dict, slot_start: int, state: dict) -> bool:
     """이 사람을 이 슬롯에 넣으면 개인 연속 규칙(하드)을 깨는가.
 
-    STREAK_RUN_LIMIT과 같은 기준 — 금지=2연속부터, 기본=3연속부터, 허용=4연속부터 차단.
+    STREAK_RUN_LIMIT과 같은 기준 — 금지=1연속까지, 기본=2연속까지, 허용=3연속까지.
     ('허용'은 3연속까지라는 뜻이지 무제한이 아니다)
     """
-    mode = p.get("streak") or ""
-    if mode == "ok3":
-        return is_four_streak(p["id"], slot_start, state)
-    if mode == "no2":
-        return is_two_streak(p["id"], slot_start, state)
-    return is_three_streak(p["id"], slot_start, state)
+    limit = STREAK_RUN_LIMIT.get(p.get("streak") or "", STREAK_RUN_LIMIT[""])
+    return streak_run_len(p["id"], slot_start, state) > limit
 
 
 def match_cost(
@@ -720,11 +837,15 @@ def enumerate_candidates(
     rng: random.Random,
     top_k: int = 10,
     court_name: str = "",
+    require_ids: frozenset = frozenset(),
 ) -> list[tuple[float, str, tuple, tuple]]:
     # 기본 모드는 3연속 하드 금지, 개인 'no2'는 2연속도 금지한다.
     # 'ok3'로 명시한 사람만 개인 면제. 최소게임수 보장은 min_games_critical이
     # 각 개인 모드를 반영해 더 일찍 발동한다.
-    working_pool = [p for p in pool if not blocks_by_streak(p, slot_start, state)]
+    # 씨드로 고정된 사람은 이 필터에서 면제한다 — 사용자가 직접 지정한 자리가 우선이고,
+    # 그 때문에 생기는 규칙 위반은 입력 검사에서 미리 경고한다.
+    working_pool = [p for p in pool
+                    if p["id"] in require_ids or not blocks_by_streak(p, slot_start, state)]
     if len(working_pool) < 4:
         return []   # 3연속 없이 코트를 채울 수 없으면 이 코트는 비운다
 
@@ -747,6 +868,12 @@ def enumerate_candidates(
             rng.random(),
         ),
     )
+    # 씨드로 고정된 사람이 후보 슬라이스(top_k·SINGLES_TOP·MIXED_TOP) 절단에 걸리면
+    # 그를 포함한 조합이 아예 생성되지 않는다 → 정렬 맨 앞으로 끌어올린다.
+    if require_ids:
+        pool_sorted = ([p for p in pool_sorted if p["id"] in require_ids]
+                       + [p for p in pool_sorted if p["id"] not in require_ids])
+
     multi_club = bool(state.get("multi_club"))
 
     full_males = [p for p in pool if p["gender"] == "M"]
@@ -796,7 +923,7 @@ def enumerate_candidates(
                                 t2 = (bm, bf)
                                 candidates.append((match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f,
                                                               court_name, mixed_is_fallback), "X", t1, t2))
-        return candidates
+        return _require_only(candidates, require_ids)
 
     # 단일 클럽(평소): 기존 로직
     top = pool_sorted[: min(len(pool_sorted), top_k)]
@@ -864,7 +991,7 @@ def enumerate_candidates(
                                    mixed_is_fallback)
                     candidates.append((c, "X", t1, t2))
 
-    return candidates
+    return _require_only(candidates, require_ids)
 
 
 SPLITS_OF_4 = (((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2)))
@@ -964,15 +1091,18 @@ def _hard_filter(
     cands: list[tuple],
     slot_start: int,
     state: dict,
+    exempt: frozenset = frozenset(),
 ) -> list[tuple]:
     """개인 연속게임 하드 규칙을 깨는 후보를 무조건 제거.
 
     (enumerate_candidates가 안전 풀만 쓰므로 평소엔 통과만 하는 이중 안전장치)
+    exempt = 씨드로 고정된 선수 — 사용자 지정이 우선이므로 여기서도 면제한다.
     """
     return [
         entry for entry in cands
         if not any(blocks_by_streak(p, slot_start, state)
-                   for p in list(entry[2]) + list(entry[3]))
+                   for p in list(entry[2]) + list(entry[3])
+                   if p["id"] not in exempt)
     ]
 
 
@@ -983,20 +1113,29 @@ def pick_match(
     state: dict,
     rng: random.Random,
     candidate_top_n: int = 24,
+    pin: dict | None = None,
 ) -> dict | None:
-    cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court)
+    req = pin_ids(pin)
+    cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court, require_ids=req)
     if not cands:
         return None
-    cands = _hard_filter(cands, slot_start, state)
+    cands = _hard_filter(cands, slot_start, state, exempt=req)
     if not cands:
         return None   # 3연속을 만들지 않고는 채울 수 없는 코트 → 공석
+    if pin:
+        cands = _orient_for_pin(cands, pin)
+        if not cands:
+            return None   # 씨드가 지정한 팀 배치를 만족하는 조합이 없음 → 공석 (review가 보고)
 
     cands.sort(key=lambda x: x[0])
     pick_pool = cands[: min(len(cands), candidate_top_n)]
     weights = [1.0 / (1.0 + i) ** 2 for i in range(len(pick_pool))]
     chosen = rng.choices(pick_pool, weights=weights, k=1)[0]
     _, mtype, t1, t2 = chosen
-    return {
+    if pin:
+        t1 = _arrange_seats(t1, pin.get("team1"))
+        t2 = _arrange_seats(t2, pin.get("team2"))
+    m = {
         "slot_start": slot_start,
         "slot_end": slot_start + 30,
         "court": court,
@@ -1008,6 +1147,11 @@ def pick_match(
         "team1_exp_sum": t1[0]["exp"] + t1[1]["exp"],
         "team2_exp_sum": t2[0]["exp"] + t2[1]["exp"],
     }
+    # 씨드가 없는 주에는 이 키를 아예 붙이지 않는다 — 결과 JSON이 종전과 바이트 단위로
+    # 같아야 '기능 미사용 시 무변화'를 회귀로 확인할 수 있다.
+    if req:
+        m["pinned"] = sorted(req)
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -1398,11 +1542,16 @@ class Refiner:
     def _sync(self) -> None:
         self.matches = self.state["matches"]
         self.slots_of = {pid: sorted(sl) for pid, sl in self.state["player_slots"].items()}
+        # 씨드로 고정된 좌석은 교환 후보에서 아예 뺀다. 같은 경기의 나머지 자리는 그대로
+        # 최적화 대상이므로 '경기 통째 잠금'보다 자유도가 크다.
+        # (증분 delta만 보는 Refiner에 잠금을 안 걸면 로컬 개선이 조용히 씨드를 갈아엎는다 —
+        #  과거 _wish_delta·timing(streak)와 같은 자리다)
         self.positions = [
             (mi, side, idx)
             for mi in range(len(self.matches))
             for side in SIDES
             for idx in (0, 1)
+            if not self._is_pinned(mi, side, idx)
         ]
         # 교환 후보는 '같은 성별(교류전이면 같은 클럽)'끼리만 가능하므로 미리 묶어 둔다.
         self.pos_groups = {}
@@ -1426,6 +1575,11 @@ class Refiner:
         self.tcache = {pid: self.timing(pid, sl) for pid, sl in self.slots_of.items()}
         # 성별별 '4명 조합 소진' 여부 — 재대결 비용을 full_score와 같은 기준으로 매기기 위함
         self.quad_forced = quad_forced_gender(self.state, self.pbid)
+
+    def _is_pinned(self, mi, side, idx) -> bool:
+        """이 좌석이 씨드로 고정된 자리인가."""
+        pinned = self.matches[mi].get("pinned")
+        return bool(pinned) and self.matches[mi][side][idx] in pinned
 
     def _group_key(self, pid):
         p = self.pbid[pid]
@@ -1576,6 +1730,9 @@ class Refiner:
     # -- (2) 경기 이동 -------------------------------------------------------
     def _match_swap_plan(self, mi1, mi2):
         m1, m2 = self.matches[mi1], self.matches[mi2]
+        # 씨드는 '이 시간, 이 코트'에 묶여 있으므로 명단 통째 이동은 아예 막는다.
+        if m1.get("pinned") or m2.get("pinned"):
+            return None
         s1, s2 = m1["slot_start"], m2["slot_start"]
         if s1 == s2:
             return None
@@ -1626,6 +1783,8 @@ class Refiner:
         for mi in touched:
             for side in SIDES:
                 for idx in (0, 1):
+                    if self._is_pinned(mi, side, idx):
+                        continue
                     key = self._group_key(self.matches[mi][side][idx])
                     self.pos_groups.setdefault(key, []).append((mi, side, idx))
 
@@ -1740,9 +1899,11 @@ def run_one_seed(
     candidate_top_n: int,
     hist_pairs=None,
     couples=None,
+    pins=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
-    state = init_state(players, hist_pairs, schedule_slots, couples)
+    pin_map, pin_slots, pin_court_of = build_pin_index(pins, players)
+    state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots)
 
     for slot in schedule_slots:
         played_here = set()
@@ -1759,17 +1920,28 @@ def run_one_seed(
             for c, gl in club_games.items():
                 club_floor[c] = max(min(gl), max(gl) - (SPREAD_CAP + 1))
         for court_name in slot["courts"]:
+            pin = pin_map.get((slot["slot_start"], court_name))
+            req = pin_ids(pin)
+            # 씨드로 지정된 사람은 최대게임수·클럽격차 필터를 통과시킨다(사용자 지정이 우선).
+            # 반대로 씨드가 아닌 사람은 '뒤에 남은 고정 자리'만큼 최대게임수 여유를 미리 뺀다.
             pool = [
                 p for p in players
                 if slot["slot_start"] in p["available_slots"]
                 and p["id"] not in played_here
-                and (p.get("max_games") is None or state["player_games"][p["id"]] < p["max_games"])
-                and (not state.get("multi_club")
-                     or state["player_games"][p["id"]] - club_floor.get(p.get("club", ""), 0) < SPREAD_CAP)
+                # 이 슬롯에서 다른 코트에 고정된 사람은 여기 앉히면 안 된다 —
+                # 먼저 데려가 버리면 정작 그 코트의 고정 자리를 못 채운다.
+                and pin_court_of.get((slot["slot_start"], p["id"]), court_name) == court_name
+                and (p["id"] in req
+                     or ((p.get("max_games") is None
+                          or state["player_games"][p["id"]]
+                          + pins_ahead(p["id"], slot["slot_start"], state) < p["max_games"])
+                         and (not state.get("multi_club")
+                              or state["player_games"][p["id"]]
+                              - club_floor.get(p.get("club", ""), 0) < SPREAD_CAP)))
             ]
             if len(pool) < 4:
                 continue
-            m = pick_match(pool, slot["slot_start"], court_name, state, rng, candidate_top_n)
+            m = pick_match(pool, slot["slot_start"], court_name, state, rng, candidate_top_n, pin=pin)
             if m is None:
                 continue
             update_state(state, m)
@@ -1789,16 +1961,18 @@ def solve(
     kicks: int = 40,
     progress=None,
     couples=None,
+    pins=None,
 ) -> dict:
     """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
 
     CLI(main)와 웹(Pyodide run.py)이 공유하는 단일 진입점.
     couples = [[이름1, 이름2, 부부페어 원함], ...] — 혼복 페어 회피/우대 + 종료시각 맞추기.
+    pins = 입력 양식 '씨드대진' 시트에서 사용자가 직접 고정한 자리(없으면 None).
     """
     results = []
     for i in range(max(1, iters)):
         s = seed + i
-        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples)
+        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples, pins)
         results.append((score, s, state))
         if progress and (i + 1) % 10 == 0:
             progress(f"초안 {i + 1}/{iters}개 생성")
@@ -1932,11 +2106,16 @@ def main():
             applied = build_hist_penalty(players, hist_pairs)
             print(f"[안내] 지난주 페어 회피 반영: 히스토리 {len(hist_pairs)}쌍 중 이번 주 명단과 겹치는 {len(applied)}쌍 회피 대상.")
 
+    pins = data.get("pins") or None
+    if pins:
+        n_seats = sum(len(pin_ids(pin)) for pin in pins)
+        print(f"[안내] 씨드 대진 반영: 고정 {n_seats}자리 / 경기 {len(pins)}개 — 나머지만 채웁니다.")
+
     out = solve(
         players, schedule_slots,
         seed=args.seed, iters=args.iters, candidates=args.candidates,
         hist_pairs=hist_pairs, refine=args.refine, kicks=args.kicks,
-        couples=couples,
+        couples=couples, pins=pins,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

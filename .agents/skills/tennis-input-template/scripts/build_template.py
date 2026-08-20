@@ -14,12 +14,23 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 HEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 GUIDE_FILL = PatternFill("solid", fgColor="FFF2CC")
+INACTIVE_FILL = PatternFill("solid", fgColor="D9D9D9")   # 씨드대진: 운영 안 하는 코트 칸
+SEED_VS_FILL = PatternFill("solid", fgColor="F2F2F2")
 HEADER_FONT = Font(name="맑은 고딕", size=11, bold=True)
 BODY_FONT = Font(name="맑은 고딕", size=11)
 THIN = Side(border_style="thin", color="888888")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center")
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+# 코트 기본값 — '코트' 시트와 '씨드대진' 시트가 같은 슬롯 집합을 써야 하므로 공유 상수로 뺐다.
+# 여기 하드코딩이 두 곳으로 갈라지면 코트 시간이 바뀔 때 씨드대진 레이아웃만 조용히 어긋난다.
+# 26.8.8~ 코트 운영시간: 1·2번(A·B) 07:00~12:00, 3번(C) 07:00~09:00
+COURTS_DEFAULT = [
+    ("A", "07:00", "12:00"),
+    ("B", "07:00", "12:00"),
+    ("C", "07:00", "09:00"),
+]
 
 
 def _style_header(cell):
@@ -143,13 +154,7 @@ def _build_courts_sheet(ws):
         _style_header(cell)
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 
-    # 26.8.8~ 코트 운영시간: 1·2번(A·B) 07:00~12:00, 3번(C) 07:00~09:00
-    defaults = [
-        ("A", "07:00", "12:00"),
-        ("B", "07:00", "12:00"),
-        ("C", "07:00", "09:00"),
-    ]
-    for r_idx, (name, start, end) in enumerate(defaults, start=2):
+    for r_idx, (name, start, end) in enumerate(COURTS_DEFAULT, start=2):
         ws.cell(row=r_idx, column=1, value=name)
         ws.cell(row=r_idx, column=2, value=start).number_format = "@"
         ws.cell(row=r_idx, column=3, value=end).number_format = "@"
@@ -164,6 +169,137 @@ def _build_courts_sheet(ws):
                 ws.cell(row=r, column=c).number_format = "@"
 
     ws.freeze_panes = "A2"
+
+
+def _seed_schedule_from_courts(courts_default: list[tuple[str, str, str]]) -> tuple[list[dict], list[dict]]:
+    """COURTS_DEFAULT 튜플에서 (코트별 슬롯, 전체 스케줄 슬롯) 을 만든다.
+
+    씨드 시트는 참가자 데이터가 아직 없는 '빈 템플릿 생성' 시점에 만들어지므로 parse_input의
+    파싱 결과가 아니라 코트 기본값에서 직접 계산한다. parse_input.build_schedule_slots와
+    같은 규칙(코트별 30분 슬롯의 합집합)을 그대로 따라야 결과 대진표(render_bracket.py)와
+    슬롯 개수·순서가 어긋나지 않는다.
+    """
+    courts = []
+    for name, start, end in courts_default:
+        sh, sm = start.split(":")
+        eh, em = end.split(":")
+        s_min, e_min = int(sh) * 60 + int(sm), int(eh) * 60 + int(em)
+        courts.append({"name": name, "slots": list(range(s_min, e_min, 30))})
+    slot_set = sorted({s for c in courts for s in c["slots"]})
+    schedule_slots = [{"slot_start": s, "slot_end": s + 30} for s in slot_set]
+    return courts, schedule_slots
+
+
+def _min_to_hhmm(v: int) -> str:
+    return f"{v // 60:02d}:{v % 60:02d}"
+
+
+def _build_seed_sheet(ws, courts_default: list[tuple[str, str, str]]):
+    """'씨드대진' 시트 — 결과 대진표(render_bracket.py)와 셀 좌표를 1:1로 맞춘 빈 입력 그리드.
+
+    사용자가 지난주 결과 엑셀에서 팀 블록을 그대로 복사해 붙여넣을 수 있는 것이 이 설계의
+    핵심이므로, 컬럼 레이아웃(1=구분, 2=성함/결과, 3부터 코트당 5컬럼=[t1a,t1b,VS,t2a,t2b])과
+    행 구조(슬롯당 2행: 성함/결과)를 render_bracket.py 336~479행과 그대로 맞춘다.
+    여기서 어긋나면 붙여넣은 이름이 엉뚱한 슬롯·코트로 읽힌다(parse_seed는 헤더 행의
+    'N번코트' 텍스트로 코트 위치를 스스로 찾긴 하지만, 슬롯 순서·간격은 이 구조를 전제한다).
+    """
+    courts, schedule_slots = _seed_schedule_from_courts(courts_default)
+
+    LABEL_COL_START = 1
+    LABEL_COL_END = 2
+    COURTS_COL_START = 3
+    cols_per_court = 5
+    courts_col_end = COURTS_COL_START + cols_per_court * len(courts) - 1
+
+    ws.column_dimensions[get_column_letter(LABEL_COL_START)].width = 9
+    ws.column_dimensions[get_column_letter(LABEL_COL_END)].width = 7
+    for i in range(len(courts)):
+        base = COURTS_COL_START + i * cols_per_court
+        for off, w in zip(range(cols_per_court), (10, 10, 4, 10, 10)):
+            ws.column_dimensions[get_column_letter(base + off)].width = w
+
+    # 행 1: 결과 대진표라면 타이틀이 들어갈 자리에 사용법 안내를 적는다
+    usage = ("[선택] 씨드 대진 — 미리 정해두고 싶은 자리에만 이름을 적으세요. "
+             "빈칸은 알고리즘이 알아서 채웁니다. 시트를 통째로 비워두면 기존과 똑같이 동작합니다.")
+    ws.cell(row=1, column=LABEL_COL_START, value=usage)
+    ws.merge_cells(start_row=1, start_column=LABEL_COL_START, end_row=1, end_column=courts_col_end)
+    tc = ws.cell(row=1, column=LABEL_COL_START)
+    tc.font = Font(name="맑은 고딕", size=11, bold=True)
+    tc.alignment = LEFT
+    tc.fill = GUIDE_FILL
+    ws.row_dimensions[1].height = 30
+
+    # 행 2: 헤더 — parse_seed는 이 'N번코트' 텍스트로 코트 위치(base 컬럼)를 스스로 찾는다
+    HEADER_ROW = 2
+    hc = ws.cell(row=HEADER_ROW, column=LABEL_COL_START, value="구분")
+    ws.merge_cells(start_row=HEADER_ROW, start_column=LABEL_COL_START,
+                    end_row=HEADER_ROW, end_column=LABEL_COL_END)
+    _style_header(hc)
+
+    for i, court in enumerate(courts):
+        base = COURTS_COL_START + i * cols_per_court
+        hc2 = ws.cell(row=HEADER_ROW, column=base, value=f"{court['name']}번코트")
+        ws.merge_cells(start_row=HEADER_ROW, start_column=base,
+                        end_row=HEADER_ROW, end_column=base + cols_per_court - 1)
+        _style_header(hc2)
+
+    # 데이터 행: 슬롯당 2행(성함/결과). 결과 행은 씨드에서 쓰지 않지만, 결과 엑셀과
+    # 행 구조(2행씩)를 맞춰야 복붙했을 때 슬롯이 밀리지 않는다.
+    data_start_row = HEADER_ROW + 1
+    for slot_idx, slot in enumerate(schedule_slots):
+        name_row = data_start_row + slot_idx * 2
+        result_row = name_row + 1
+        ws.row_dimensions[name_row].height = 24
+        ws.row_dimensions[result_row].height = 24
+
+        lc = ws.cell(row=name_row, column=LABEL_COL_START,
+                      value=f"{slot_idx + 1}번 게임\n{_min_to_hhmm(slot['slot_start'])}\n~{_min_to_hhmm(slot['slot_end'])}")
+        ws.merge_cells(start_row=name_row, start_column=LABEL_COL_START,
+                        end_row=result_row, end_column=LABEL_COL_START)
+        lc.font = BODY_FONT
+        lc.alignment = CENTER
+        lc.border = BORDER
+
+        nc = ws.cell(row=name_row, column=LABEL_COL_END, value="성함")
+        rc = ws.cell(row=result_row, column=LABEL_COL_END, value="결과")
+        for cell in (nc, rc):
+            _style_header(cell)
+
+        for i, court in enumerate(courts):
+            base = COURTS_COL_START + i * cols_per_court
+            court_active = slot["slot_start"] in court["slots"]
+
+            for col_off in range(cols_per_court):
+                for r in (name_row, result_row):
+                    cell = ws.cell(row=r, column=base + col_off)
+                    cell.border = BORDER
+                    cell.alignment = CENTER
+                    cell.font = BODY_FONT
+                    if not court_active:
+                        cell.fill = INACTIVE_FILL   # 이 슬롯엔 이 코트가 운영하지 않음 — 입력칸 아님
+
+            if not court_active:
+                continue
+
+            vs_cell = ws.cell(row=name_row, column=base + 2, value="VS")
+            vs_cell.font = Font(name="맑은 고딕", size=10, bold=True, color="999999")
+            vs_cell.fill = SEED_VS_FILL
+            for off in (0, 1, 3, 4):   # 입력칸: t1a, t1b, t2a, t2b
+                ws.cell(row=name_row, column=base + off).fill = GUIDE_FILL
+
+    # 주의사항 (마지막 데이터 행 + 2)
+    note_row = data_start_row + len(schedule_slots) * 2 + 1
+    notes = [
+        "· 이름은 '참가자' 시트와 똑같이 적어야 합니다. (게스트는 '홍길동(G)'처럼 적어도 인식됩니다)",
+        "· 왼쪽 두 칸이 한 팀, 오른쪽 두 칸이 상대 팀입니다. 적은 자리 그대로 고정됩니다.",
+        "· 남자와 여자를 같은 경기에 적으면 그 경기는 혼합복식이 됩니다.",
+    ]
+    for i, t in enumerate(notes):
+        nc2 = ws.cell(row=note_row + i, column=1, value=t)
+        nc2.font = Font(name="맑은 고딕", size=9, color="666666")
+        nc2.alignment = LEFT
+
+    ws.freeze_panes = f"C{data_start_row}"
 
 
 def _build_guide_sheet(ws):
@@ -207,7 +343,19 @@ def _build_guide_sheet(ws):
         ("• 시간은 30분 단위, 시작 < 종료", False),
         ("• 사용하지 않는 행은 빈 칸으로 두면 됩니다", False),
         ("", False),
-        ("■ 3. 자동 배정 규칙 (알고리즘 동작 원리)", True),
+        ("■ 3. 씨드대진 시트 작성법 (선택)", True),
+        ("• 대진의 일부를 미리 정해두고 싶을 때만 사용 — 완전히 비워두면 기존과 똑같이 동작합니다", False),
+        ("• 결과 대진표와 셀 위치가 똑같습니다 — 지난주 결과 엑셀에서 팀 블록을 복사해 그대로", False),
+        ("  붙여넣을 수 있습니다", False),
+        ("• 이름은 '참가자' 시트와 똑같이 적어야 인식됩니다 (게스트는 '홍길동(G)'도 인식)", False),
+        ("• 왼쪽 두 칸이 한 팀, 오른쪽 두 칸이 상대 팀 — 적은 자리는 그대로 고정되고", False),
+        ("  나머지는 알고리즘이 채웁니다", False),
+        ("• 남자와 여자를 같은 경기에 적으면 그 경기는 자동으로 혼합복식이 됩니다", False),
+        ("• 회색 칸은 그 시간에 운영하지 않는 코트라 입력할 수 없습니다", False),
+        ("• 같은 사람을 같은 시간대에 두 곳에 적거나, 본인 IN~OUT 시간 밖에 적으면 오류로 표시되고", False),
+        ("  대진표 생성이 중단됩니다", False),
+        ("", False),
+        ("■ 4. 자동 배정 규칙 (알고리즘 동작 원리)", True),
         ("", False),
         ("[A] 기본 단위", True),
         ("• 1게임 = 30분", False),
@@ -288,7 +436,7 @@ def _build_guide_sheet(ws):
         ("• 클럽 칸이 모두 비었거나 한 종류면 평소대로 동작 (영향 없음)", False),
         ("• 주의: 상대 클럽 인원이 부족한 슬롯에선 남는 사람이 쉬고 그 코트는 공석이 될 수 있음", False),
         ("", False),
-        ("■ 4. 알고리즘이 회피 못 하는 입력 구조 (참고)", True),
+        ("■ 5. 알고리즘이 회피 못 하는 입력 구조 (참고)", True),
         ("• 여자 인원이 4명 미만 → 여자복식 불가, 혼복만 가능", False),
         ("• 남자 인원이 4명 미만 → 남자복식 불가, 혼복만 가능", False),
         ("• 여자 최고 구력 > 남자 최고 구력 → 혼복 시 일부 규칙 위반 불가피", False),
@@ -296,7 +444,7 @@ def _build_guide_sheet(ws):
         ("• 가용 인원 = 코트수×4 → 휴식 자리 없어 연속 출전 발생", False),
         ("• 특정 슬롯에 가용 인원 4명 미만 → 그 코트는 자동 공석", False),
         ("", False),
-        ("■ 5. 결과 생성 방법", True),
+        ("■ 6. 결과 생성 방법", True),
         ("• Windows 명령창(또는 PowerShell)에서:", False),
         ('     python 대진표_생성.py --date "26.5.30"', False),
         ("• 또는 대진표_생성.bat 더블클릭", False),
@@ -305,11 +453,11 @@ def _build_guide_sheet(ws):
         ("     python 대진표_생성.py --check   (또는 대진표_생성.bat 실행 후 C 입력)", False),
         ("     - 오류·경고, 인원·자리 요약, 최소/최대게임수 지정 현황을 보여줍니다", False),
         ("", False),
-        ("■ 6. 다시 생성하고 싶을 때", True),
+        ("■ 7. 다시 생성하고 싶을 때", True),
         ("• 같은 입력으로 다른 패턴 원하면 --seed 99 (또는 다른 숫자)", False),
         ("• 입력 양식 수정 후 다시 실행하면 새로 생성", False),
         ("", False),
-        ("■ 7. 파일 위치", True),
+        ("■ 8. 파일 위치", True),
         ("• 입력 양식: 입력/테니스_입력양식.xlsx", False),
         ("• 결과 파일: 출력/테니스_대진표_<YYMMDD>.xlsx", False),
         ("• 샘플/참고: 샘플/  (이미지·예시 데이터)", False),
@@ -395,10 +543,14 @@ def build_template(out_path: str, prefill: str = "") -> None:
     ws_courts = wb.create_sheet("코트")
     _build_courts_sheet(ws_courts)
 
+    ws_seed = wb.create_sheet("씨드대진")
+    _build_seed_sheet(ws_seed, COURTS_DEFAULT)
+
     ws_guide = wb.create_sheet("안내")
     _build_guide_sheet(ws_guide)
 
-    wb.move_sheet(ws_guide, offset=-2)
+    # 시트 순서: 안내, 참가자, 코트, 씨드대진
+    wb.move_sheet(ws_guide, offset=-3)
 
     wb.save(out_path)
 

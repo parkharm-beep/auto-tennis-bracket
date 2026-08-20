@@ -38,6 +38,9 @@ CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 FONT_TITLE = Font(name="맑은 고딕", size=18, bold=True)
 FONT_HEADER = Font(name="맑은 고딕", size=11, bold=True)
 FONT_NAME = Font(name="맑은 고딕", size=11, bold=True)
+# 씨드('씨드대진' 시트)로 사용자가 직접 고정한 이름 — 내가 정한 자리가 그대로 남았는지
+# 결과 파일에서 바로 알아볼 수 있게 진한 파란색으로 구분한다.
+FONT_NAME_SEED = Font(name="맑은 고딕", size=11, bold=True, color="1F4E79")
 FONT_TIME = Font(name="맑은 고딕", size=10)
 FONT_SMALL = Font(name="맑은 고딕", size=9, color="666666")
 FONT_VS = Font(name="맑은 고딕", size=10, bold=True, color="999999")
@@ -460,9 +463,10 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
                 continue
 
             stats_by_id = {s["id"]: s for s in player_stats}
+            seeded = set(m.get("pinned") or ())
             for k, p_id in enumerate(m["team1"]):
                 cell = ws.cell(row=name_row, column=base + k, value=display_name(stats_by_id[p_id]))
-                cell.font = FONT_NAME
+                cell.font = FONT_NAME_SEED if p_id in seeded else FONT_NAME
                 cell.fill = court_color
                 cell.alignment = CENTER
                 cell.border = BORDER
@@ -473,7 +477,7 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
             vs_cell.border = BORDER
             for k, p_id in enumerate(m["team2"]):
                 cell = ws.cell(row=name_row, column=base + 3 + k, value=display_name(stats_by_id[p_id]))
-                cell.font = FONT_NAME
+                cell.font = FONT_NAME_SEED if p_id in seeded else FONT_NAME
                 cell.fill = court_color
                 cell.alignment = CENTER
                 cell.border = BORDER

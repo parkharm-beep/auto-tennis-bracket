@@ -8,7 +8,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+from collections import defaultdict
 from openpyxl import load_workbook
 
 
@@ -416,6 +418,269 @@ def attach_available_slots(players: list[dict], schedule_slots: list[dict]) -> N
         p["available_slots"] = avail
 
 
+_SEED_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})")
+
+
+def _clean_seed_name(v) -> str:
+    """셀 값에서 표시용 장식을 제거해 순수 이름만 남긴다. history.py의 _clean_name과 동일 규칙 —
+
+    씨드대진은 지난주 결과 엑셀을 그대로 복사해 붙여넣는 용도라 게스트 표기 '(G)'가
+    섞여 들어오는 게 정상이다.
+    """
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    if s.endswith("(G)"):
+        s = s[:-3].strip()
+    return s
+
+
+def _max_consecutive_run(slots: list[int]) -> int:
+    """정렬된 슬롯 시작시각 목록에서 30분 간격으로 이어진 최장 연속 게임 수."""
+    if not slots:
+        return 0
+    slots = sorted(slots)
+    best = cur = 1
+    for i in range(1, len(slots)):
+        cur = cur + 1 if slots[i] - slots[i - 1] == 30 else 1
+        best = max(best, cur)
+    return best
+
+
+def _seed_types_possible(t1: list, t2: list, players_by_id: dict) -> set:
+    """이 씨드 배치를 완성할 수 있는 경기 종류 집합 ({"M","F","X"} 중).
+
+    경기는 남복(전원 남)·여복(전원 여)·혼복(각 팀 남1+여1) 셋뿐이다. 셋 다 불가능한
+    조합(예: 한 팀에 남자 둘 + 상대 팀에 여자 하나)을 그대로 두면 알고리즘이 그 코트를
+    조용히 비우고, 사용자는 결과를 열어 보고서야 알게 된다.
+    """
+    g1 = [players_by_id[i]["gender"] for i in t1 if i]
+    g2 = [players_by_id[i]["gender"] for i in t2 if i]
+    allg = g1 + g2
+    if not allg:
+        return {"M", "F", "X"}
+    out = set()
+    if all(g == "M" for g in allg):
+        out.add("M")
+    if all(g == "F" for g in allg):
+        out.add("F")
+    # 혼복은 각 팀이 남1·여1 — 팀별로 같은 성별이 둘이면 불가능
+    if all(side.count("M") <= 1 and side.count("F") <= 1 for side in (g1, g2)):
+        out.add("X")
+    return out
+
+
+def _seed_club_error(t1: list, t2: list, players_by_id: dict) -> str:
+    """교류전(클럽 2개 이상)에서 이 고정이 클럽 규칙을 어기는가. 어기면 사유 문자열.
+
+    교류전은 '같은 팀은 같은 클럽, 상대는 반드시 다른 클럽'이 하드 규칙이라, 이를 어긴
+    고정은 어떤 후보로도 완성되지 않는다(알고리즘이 그 코트를 비운다).
+    """
+    c1 = {players_by_id[i].get("club", "") for i in t1 if i}
+    c2 = {players_by_id[i].get("club", "") for i in t2 if i}
+    if len(c1) > 1 or len(c2) > 1:
+        return "교류전에서는 같은 팀이 같은 클럽이어야 합니다"
+    if c1 and c2 and c1 == c2:
+        return "교류전에서는 상대 팀이 다른 클럽이어야 합니다"
+    return ""
+
+
+def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[list[dict], list[str], list[str]]:
+    """'씨드대진' 시트에서 고정 배치를 읽는다 → (pins, errors, warnings).
+
+    pins = [{"slot_start": int, "court": str,
+             "team1": [pid|None, pid|None], "team2": [pid|None, pid|None]}, ...]
+    이름이 하나도 없는 (슬롯,코트)는 pins에 넣지 않는다.
+
+    시트 좌표를 하드코딩하지 않고 history.py의 extract_pairs_from_bracket_xlsx()와 같은
+    방식으로 스스로 찾는다 — build_template.py가 만든 그리드와 셀 위치가 같다는 전제는
+    유지하되(성능상 이점), 헤더가 지워지거나 코트 순서가 바뀌어도 안전하게 동작한다.
+    반드시 attach_available_slots() 호출 뒤에 불러야 p["available_slots"]가 채워져 있다.
+    """
+    pins: list[dict] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # 1) 헤더 행과 코트 base 열 찾기 (history.py와 동일한 방식)
+    header_row = None
+    bases: list[int] = []
+    for r in range(1, min(ws.max_row, 8) + 1):
+        cols = []
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row=r, column=c).value
+            if v and "번코트" in str(v):
+                cols.append(c)
+        if cols:
+            header_row = r
+            bases = cols
+            break
+
+    if header_row is None:
+        # 1행(사용법 안내 타이틀)을 제외하고 뭔가 남아 있으면 헤더가 지워진 손상 상태로 본다.
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if any(v not in (None, "") and str(v).strip() for v in row):
+                errors.append("씨드대진 시트: 헤더 행('N번코트')을 찾을 수 없습니다 — 시트 형식이 손상되었을 수 있습니다")
+                break
+        return pins, errors, warnings
+
+    # 코트 이름이 겹치면 뒤 블록이 앞 블록을 덮어써 앞에 적은 고정이 조용히 사라진다
+    # (그런데 그 사람의 '예약'은 남아 다른 코트에서도 못 쓰게 된다). 시트가 손상된 상태이므로 막는다.
+    court_names = [str(ws.cell(row=header_row, column=c).value or "").replace("번코트", "").strip()
+                   for c in bases]
+    dup = sorted({c for c in court_names if court_names.count(c) > 1})
+    if dup:
+        errors.append(f"씨드대진 시트: 코트 헤더가 중복됩니다 ({', '.join(dup)}) — 시트 형식이 손상되었을 수 있습니다")
+        return pins, errors, warnings
+
+    name_to_pid = {p["name"]: p["id"] for p in players}
+    players_by_id = {p["id"]: p for p in players}
+    schedule_by_start = {s["slot_start"]: s for s in schedule_slots}
+    # 교류전이면 팀 구성에 클럽 제약이 붙는다
+    multi_club = len({p.get("club", "") for p in players if p.get("club", "")}) > 1
+    # 그 슬롯에 실제로 뛸 수 있는 인원(성별별) — 인원이 모자라 완성 불가능한 고정을 잡는 데 쓴다
+    avail_by_slot = {}
+    for sl in schedule_slots:
+        s0 = sl["slot_start"]
+        avail_by_slot[s0] = (
+            sum(1 for p in players if p["gender"] == "M" and s0 in p.get("available_slots", [])),
+            sum(1 for p in players if p["gender"] == "F" and s0 in p.get("available_slots", [])),
+        )
+
+    # 2) 성함 행(헤더 다음 행부터 2행 간격) 목록 확보 — col1이 비면 데이터 그리드가 끝난 것.
+    #    슬롯 수만큼만 읽는다: 경계가 없으면 시트 아래 메모처럼 '시간처럼 보이는 글자'가 든 행을
+    #    슬롯으로 오인해 엉뚱한 고정을 만들어 낸다.
+    name_rows = []
+    row = header_row + 1
+    while row <= ws.max_row and len(name_rows) < len(schedule_slots):
+        col1 = ws.cell(row=row, column=1).value
+        if col1 is None or not str(col1).strip():
+            break
+        name_rows.append((row, col1))
+        row += 2
+
+    seen_slots: set = set()
+    for name_row, col1_val in name_rows:
+        # 이 행(=하나의 시간 슬롯)에 적힌 이름을 코트별로 먼저 걷어온다
+        seats_by_base = {}
+        row_has_names = False
+        for base in bases:
+            vals = [ws.cell(row=name_row, column=base + off).value for off in (0, 1, 3, 4)]
+            cleaned = [_clean_seed_name(v) for v in vals]
+            seats_by_base[base] = cleaned
+            if any(cleaned):
+                row_has_names = True
+        if not row_has_names:
+            continue
+
+        m = _SEED_TIME_RE.search(str(col1_val))
+        if not m:
+            errors.append(f"씨드대진 {name_row}행: 이름이 있는데 시간을 인식할 수 없습니다 (칸 내용: '{col1_val}')")
+            continue
+        slot_start = int(m.group(1)) * 60 + int(m.group(2))
+        if slot_start in seen_slots:
+            errors.append(f"씨드대진 {name_row}행: 시각 {min_to_hhmm(slot_start)}이(가) 두 번 나옵니다"
+                          f" — 시트 형식이 손상되었을 수 있습니다")
+            continue
+        seen_slots.add(slot_start)
+        slot = schedule_by_start.get(slot_start)
+        if slot is None:
+            errors.append(f"씨드대진 {min_to_hhmm(slot_start)}: 현재 코트 시간표에 없는 시각입니다"
+                           f" (코트 운영시간이 바뀌어 없어진 슬롯인데 씨드가 남아 있을 수 있습니다)")
+            continue
+
+        slot_seen_pids: set = set()
+        for base, cleaned in seats_by_base.items():
+            if not any(cleaned):
+                continue
+            hdr_val = ws.cell(row=header_row, column=base).value
+            court_name = str(hdr_val).replace("번코트", "").strip() if hdr_val else ""
+            tag = f"씨드대진 {min_to_hhmm(slot_start)} {court_name}코트"
+
+            if court_name not in slot["courts"]:
+                errors.append(f"{tag}: 이 시간에는 {court_name}코트를 운영하지 않습니다")
+                continue
+
+            pids: list = [None, None, None, None]
+            resolved = []
+            court_has_error = False
+            for i, nm in enumerate(cleaned):
+                if not nm:
+                    continue
+                pid = name_to_pid.get(nm)
+                if pid is None:
+                    errors.append(f"{tag}: '{nm}'은 참가자 시트에 없는 이름입니다")
+                    court_has_error = True
+                    continue
+                p = players_by_id[pid]
+                if slot_start not in p.get("available_slots", []):
+                    errors.append(f"{tag}: '{nm}'은 이 시간(IN~OUT) 밖입니다")
+                    court_has_error = True
+                    continue
+                if pid in slot_seen_pids:
+                    errors.append(f"{tag}: '{nm}'이 같은 시간대에 두 번 배치되었습니다 (다른 코트 포함 중복 불가)")
+                    court_has_error = True
+                    continue
+                slot_seen_pids.add(pid)
+                pids[i] = pid
+                resolved.append(p)
+
+            if court_has_error:
+                continue
+            if all(x is None for x in pids):
+                continue
+
+            types = _seed_types_possible(pids[0:2], pids[2:4], players_by_id)
+            if not types:
+                errors.append(f"{tag}: 이 조합으로는 경기를 만들 수 없습니다 — "
+                              f"남복(전원 남)·여복(전원 여)·혼복(각 팀 남1+여1) 중 하나여야 합니다")
+                continue
+
+            # 그 시간에 인원이 모자라면 어떤 종류로도 완성할 수 없다. 여기서 막지 않으면
+            # 알고리즘이 그 코트를 조용히 비우고 사용자는 결과를 열어 보고서야 알게 된다.
+            n_m, n_f = avail_by_slot.get(slot_start, (0, 0))
+            feasible = ("M" in types and n_m >= 4) or ("F" in types and n_f >= 4) \
+                       or ("X" in types and n_m >= 2 and n_f >= 2)
+            if not feasible:
+                errors.append(f"{tag}: 이 시간에 뛸 수 있는 인원이 남 {n_m}명·여 {n_f}명뿐이라 "
+                              f"이 고정을 완성할 수 없습니다")
+                continue
+
+            if multi_club:
+                why = _seed_club_error(pids[0:2], pids[2:4], players_by_id)
+                if why:
+                    errors.append(f"{tag}: {why}")
+                    continue
+
+            genders = {p["gender"] for p in resolved}
+            if genders == {"M", "F"}:
+                warnings.append(f"{tag}: 남녀가 섞여 있어 이 경기는 혼복이 됩니다")
+
+            pins.append({"slot_start": slot_start, "court": court_name,
+                         "team1": pids[0:2], "team2": pids[2:4]})
+
+    # 3) 씨드 배치만으로 개인별 최대게임수·연속게임 한도를 넘는지 경고
+    pid_slots: dict = defaultdict(list)
+    for pin in pins:
+        for pid in pin["team1"] + pin["team2"]:
+            if pid:
+                pid_slots[pid].append(pin["slot_start"])
+
+    for pid, slots_here in pid_slots.items():
+        p = players_by_id[pid]
+        count = len(slots_here)
+        if p.get("max_games") is not None and count > p["max_games"]:
+            warnings.append(f"'{p['name']}': 씨드에서 이미 {count}게임 배치됨 — 최대게임수({p['max_games']})를 넘습니다")
+        limit = STREAK_RUN_LIMIT.get(p.get("streak") or "", STREAK_RUN_LIMIT[""])
+        run = _max_consecutive_run(slots_here)
+        if run > limit:
+            warnings.append(f"'{p['name']}': 씨드에서 {run}연속 배치 — 연속게임 규칙(최대 {limit}연속)을"
+                             f" 넘습니다. 씨드가 우선하므로 그대로 진행됩니다")
+
+    return pins, errors, warnings
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="inp", required=True)
@@ -501,6 +766,17 @@ def main():
             warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > {cap_label}({cap}게임) — {cap}게임까지만 보장됨")
     warnings.extend(clamp_mixed_wish(players))
 
+    # 씨드대진: 참가자 명단이 있어야 이름 대조가 되므로 반드시 위 참가자·코트 파싱 이후,
+    # available_slots가 채워진 뒤에 부른다. 에러는 여기서 바로 중단(다른 에러들과 동일 방식).
+    pins: list = []
+    if "씨드대진" in wb.sheetnames:
+        pins, seed_errors, seed_warnings = parse_seed(wb["씨드대진"], players, schedule_slots)
+        if seed_errors:
+            for e in seed_errors:
+                print(f"[에러] {e}", file=sys.stderr)
+            sys.exit(1)
+        warnings.extend(seed_warnings)
+
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0
     for sl in schedule_slots:
@@ -548,12 +824,18 @@ def main():
         "players": players,
         "schedule_slots": schedule_slots,
         "couples": couples,
+        "pins": pins,
         "warnings": warnings,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    print(f"[OK] 파싱 완료: {args.out}  (참가자 {len(players)}명, 코트 {len(courts)}개, 슬롯 {len(schedule_slots)}개)")
+    ok_msg = f"[OK] 파싱 완료: {args.out}  (참가자 {len(players)}명, 코트 {len(courts)}개, 슬롯 {len(schedule_slots)}개"
+    if pins:
+        seats = sum(1 for pin in pins for pid in pin["team1"] + pin["team2"] if pid)
+        ok_msg += f", 씨드 {seats}자리"
+    ok_msg += ")"
+    print(ok_msg)
 
 
 if __name__ == "__main__":

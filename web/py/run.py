@@ -18,6 +18,7 @@ from parse_input import (
     clamp_mixed_wish,
     min_to_hhmm,
     parse_member_settings,
+    parse_seed,
     _max_games_streak,
     COUPLES_DEFAULT,
 )
@@ -50,6 +51,16 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
     attach_available_slots(players, schedule_slots)
 
     warnings = []
+
+    # 씨드대진(선택) — 사용자가 직접 고정한 자리. 시트가 없거나 비어 있으면 pins=[]이고
+    # 이후 동작은 종전과 완전히 같다.
+    pins = []
+    if "씨드대진" in wb.sheetnames:
+        pins, seed_errs, seed_warns = parse_seed(wb["씨드대진"], players, schedule_slots)
+        if seed_errs:
+            raise ValueError("씨드대진 시트 오류:\n  - " + "\n  - ".join(seed_errs))
+        warnings.extend(seed_warns)
+
     males = [p for p in players if p["gender"] == "M"]
     females = [p for p in players if p["gender"] == "F"]
     if len(males) < 4:
@@ -103,6 +114,7 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
         "courts": courts,
         "players": players,
         "schedule_slots": schedule_slots,
+        "pins": pins,
         "warnings": warnings,
     }
 
@@ -183,7 +195,7 @@ def generate_bracket(
     bracket = solve(
         parsed["players"], parsed["schedule_slots"],
         seed=seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
-        couples=couples,
+        couples=couples, pins=parsed.get("pins"),
     )
     review = compute_scores(parsed, bracket, hist_pairs)
 
@@ -209,6 +221,9 @@ def generate_bracket(
             "members_uploaded": members_uploaded,
             "couples_total": len(couples),
             "couples_present": couples_present,
+            "seed_seats": review["scores"].get("seed_seats", 0),
+            "seed_seats_kept": review["scores"].get("seed_seats_kept", 0),
+            "seed_matches": review["scores"].get("seed_matches", 0),
         },
     }
 
