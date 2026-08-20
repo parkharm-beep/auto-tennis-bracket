@@ -205,6 +205,7 @@ def generate_bracket(
 
     distinct_clubs = {p.get("club", "") for p in parsed["players"] if p.get("club", "")}
     is_exchange = len(distinct_clubs) > 1
+    _seed_name = {p["id"]: p["name"] for p in parsed["players"]}
 
     return {
         "xlsx_bytes": out_buf.getvalue(),
@@ -221,6 +222,18 @@ def generate_bracket(
             "members_uploaded": members_uploaded,
             "couples_total": len(couples),
             "couples_present": couples_present,
+            # 씨드 목록을 그대로 실어 준다 — 사용자는 웹만 쓰므로 '내가 적은 대로 읽혔는지'를
+            # 확인할 수단이 웹에 없으면 잘못 붙여넣은 씨드가 조용히 통과한다(CLI --check와 대칭).
+            "seed_pins": [
+                {
+                    "time": min_to_hhmm(pin["slot_start"]),
+                    "court": str(pin["court"]),
+                    "team1": [(_seed_name.get(i) or "") for i in (pin.get("team1") or [])],
+                    "team2": [(_seed_name.get(i) or "") for i in (pin.get("team2") or [])],
+                }
+                for pin in sorted(parsed.get("pins") or [],
+                                  key=lambda x: (x["slot_start"], str(x["court"])))
+            ],
             "seed_seats": review["scores"].get("seed_seats", 0),
             "seed_seats_kept": review["scores"].get("seed_seats_kept", 0),
             "seed_matches": review["scores"].get("seed_matches", 0),

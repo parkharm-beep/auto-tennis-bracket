@@ -130,8 +130,9 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
 
     # ── 씨드(고정 배치) ──────────────────────────────────────────────────
     # 사용자가 '씨드대진' 시트에 직접 적어 둔 자리가 결과에 그대로 남아 있는지 확인한다.
-    # 자리를 못 채운 경우는 알고리즘 버그가 아니라 입력이 구조적으로 불가능한 것이므로
-    # (그 시간에 그 조합을 만들 인원이 없음) RETRY 사유로 삼지 않고 크게 보고만 한다.
+    # 자리를 못 채웠으면 사용자가 명시적으로 요구한 것을 못 지킨 것이므로 PASS를 주지 않는다
+    # (아래 verdict 판정에서 RETRY). 다만 재시도로 못 고치는 입력일 수도 있어 메시지에 무엇을
+    # 확인해야 하는지 적는다 — 입력 검사(parse_seed)가 대부분을 미리 에러로 막는다.
     pins = parsed.get("pins") or []
     pin_slots_by_pid: dict = {}
     for pin in pins:
@@ -154,8 +155,9 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                         "severity": "high",
                         "code": "seed_not_kept",
                         "msg": f"{min_to_hhmm(pin['slot_start'])} {pin['court']}코트: 씨드로 고정한 "
-                               f"'{name}'을(를) 배정하지 못했습니다 — 그 자리를 채울 조합이 없습니다"
-                               f" (그 시간대 인원·성별 구성 확인 필요)",
+                               f"'{name}'을(를) 배정하지 못했습니다 — 같은 시간대의 다른 고정·"
+                               f"가용 인원과 자리가 겹치지 않는지 확인하세요 "
+                               f"(고정을 줄이거나 시각·코트를 옮기면 해소됩니다)",
                     })
     scores["seed_seats"] = seed_seats
     scores["seed_seats_kept"] = seed_kept

@@ -220,7 +220,9 @@ def _build_seed_sheet(ws, courts_default: list[tuple[str, str, str]]):
 
     # 행 1: 결과 대진표라면 타이틀이 들어갈 자리에 사용법 안내를 적는다
     usage = ("[선택] 씨드 대진 — 미리 정해두고 싶은 자리에만 이름을 적으세요. "
-             "빈칸은 알고리즘이 알아서 채웁니다. 시트를 통째로 비워두면 기존과 똑같이 동작합니다.")
+             "빈칸은 알고리즘이 알아서 채웁니다. 시트를 통째로 비워두면 기존과 똑같이 동작합니다. "
+             "※ 이 격자는 '코트' 시트 기본값(A·B 07:00~12:00, C 07:00~09:00) 기준입니다 — "
+             "코트 시간을 바꾸셨다면 회색/노란색 표시가 실제와 다를 수 있고, 판정은 '코트' 시트가 기준입니다.")
     ws.cell(row=1, column=LABEL_COL_START, value=usage)
     ws.merge_cells(start_row=1, start_column=LABEL_COL_START, end_row=1, end_column=courts_col_end)
     tc = ws.cell(row=1, column=LABEL_COL_START)

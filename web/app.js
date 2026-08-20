@@ -241,6 +241,16 @@ function handleDone({ xlsx, review, summary, elapsed }) {
           : ""
       }
       ${
+        summary.seed_pins && summary.seed_pins.length
+          ? `<details><summary>씨드 고정 목록 ${summary.seed_pins.length}경기 (적은 대로 읽혔는지 확인)</summary><ul>${summary.seed_pins
+              .map((p) => {
+                const cell = (n) => (n ? n : "＿");
+                return `<li>${p.time} ${p.court}코트: ${p.team1.map(cell).join(" · ")} <b>vs</b> ${p.team2.map(cell).join(" · ")}</li>`;
+              })
+              .join("")}</ul><p class="muted">＿ 는 알고리즘이 채우는 자리입니다.</p></details>`
+          : ""
+      }
+      ${
         summary.couples_present
           ? `<p><strong>부부 페어</strong> 이번 주 참가 ${summary.couples_present}쌍 (${summary.members_uploaded ? "업로드한 설정" : "기본 설정"}) — 혼복 같은팀: 원함 ${(s.couple_want_paired || []).length ? (s.couple_want_paired || []).join(", ") : "없음"} / 피함인데 발생 ${(s.couple_avoid_paired || []).length ? (s.couple_avoid_paired || []).join(", ") : "0건"} · 종료 30분 초과 ${(s.couple_finish_over30 || []).length}쌍${(s.couple_gap30_missed || []).length ? ` · 종료 30분차이 미달성 ${(s.couple_gap30_missed || []).join(", ")}` : ""}</p>`
           : ""

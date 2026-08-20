@@ -12,6 +12,7 @@ import re
 import sys
 from collections import defaultdict
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +562,7 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
         row += 2
 
     seen_slots: set = set()
+    slot_needs: dict = {}          # 슬롯 → 그 슬롯 고정들의 '가능한 경기 종류' 목록
     for name_row, col1_val in name_rows:
         # 이 행(=하나의 시간 슬롯)에 적힌 이름을 코트별로 먼저 걷어온다
         seats_by_base = {}
@@ -570,6 +572,14 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
             cleaned = [_clean_seed_name(v) for v in vals]
             seats_by_base[base] = cleaned
             if any(cleaned):
+                row_has_names = True
+            # 한 칸 어긋나게 붙여넣으면 이름이 VS칸으로 밀린다. 그대로 두면 그 사람은
+            # 조용히 사라지고 나머지는 옆자리로 밀려 '다른 대진'이 확정된다 —
+            # 실패가 아니라 틀린 성공이라 더 위험하다.
+            mid = _clean_seed_name(ws.cell(row=name_row, column=base + 2).value)
+            if mid and mid not in ("VS", "vs", "혼"):
+                errors.append(f"씨드대진 {name_row}행: 가운데(VS) 칸에 '{mid}'이(가) 있습니다 — "
+                              f"열이 한 칸 어긋나게 붙여넣어졌는지 확인하세요")
                 row_has_names = True
         if not row_has_names:
             continue
@@ -657,10 +667,46 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
             if genders == {"M", "F"}:
                 warnings.append(f"{tag}: 남녀가 섞여 있어 이 경기는 혼복이 됩니다")
 
+            slot_needs.setdefault(slot_start, []).append(types)
             pins.append({"slot_start": slot_start, "court": court_name,
                          "team1": pids[0:2], "team2": pids[2:4]})
 
-    # 3) 씨드 배치만으로 개인별 최대게임수·연속게임 한도를 넘는지 경고
+    # 3) 같은 슬롯의 고정들이 인원을 나눠 쓸 수 있는지 (경기 하나씩 보면 통과하지만
+    #    합쳐 보면 인원이 모자란 경우가 있다 — 예: 여자 5명인 슬롯에서 A코트 여복 4명 +
+    #    B코트 혼복 1자리 → 여자만 6명 필요. 이건 시드를 바꿔도 절대 안 채워진다)
+    _MEN_REQ = {"M": 4, "F": 0, "X": 2}
+    _WOMEN_REQ = {"M": 0, "F": 4, "X": 2}
+    for s0, type_list in sorted(slot_needs.items()):
+        n_m, n_f = avail_by_slot.get(s0, (0, 0))
+        # 종류가 아직 안 정해진 고정은 '가장 적게 쓰는 종류' 기준으로 센다 → 확실한 하한
+        need_m = sum(min(_MEN_REQ[t] for t in ts) for ts in type_list)
+        need_f = sum(min(_WOMEN_REQ[t] for t in ts) for ts in type_list)
+        need_all = 4 * len(type_list)
+        if need_m > n_m or need_f > n_f or need_all > n_m + n_f:
+            errors.append(
+                f"씨드대진 {min_to_hhmm(s0)}: 이 시각의 고정 {len(type_list)}경기를 함께 채울 인원이"
+                f" 모자랍니다 (필요 최소 남 {need_m}명·여 {need_f}명, 합 {need_all}명 /"
+                f" 가능 남 {n_m}명·여 {n_f}명)")
+
+    # 4) 격자 안에서 '읽지 않은 자리'에 참가자 이름이 있으면 알린다.
+    #    결과 행에 붙여넣거나 시간 라벨이 지워지면 지금까지는 씨드가 통째로 증발하면서도
+    #    아무 말이 없었다(웹은 씨드 표시 자체를 안 해 사용자가 알 길이 없다).
+    seat_cols = {b + off for b in bases for off in (0, 1, 3, 4)}
+    name_row_set = {r for r, _ in name_rows}
+    stray = []
+    for r in range(header_row + 1, ws.max_row + 1):
+        for c in range(min(bases), ws.max_column + 1):
+            if r in name_row_set and c in seat_cols:
+                continue        # 정상적으로 읽은 자리
+            nm = _clean_seed_name(ws.cell(row=r, column=c).value)
+            if nm and nm in name_to_pid:
+                stray.append(f"{r}행 {get_column_letter(c)}열 '{nm}'")
+    if stray:
+        errors.append("씨드대진: 인식되지 않는 위치에 이름이 있습니다 — "
+                      + ", ".join(stray[:6]) + (" 외" if len(stray) > 6 else "")
+                      + " (성함 행이 아닌 '결과' 행이거나 열이 어긋났을 수 있습니다)")
+
+    # 5) 씨드 배치만으로 개인별 최대게임수·연속게임 한도를 넘는지 경고
     pid_slots: dict = defaultdict(list)
     for pin in pins:
         for pid in pin["team1"] + pin["team2"]:

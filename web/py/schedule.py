@@ -113,6 +113,10 @@ G = dict(
     long_start_delay=60.0,      # 첫 경기까지 1시간 넘게 기다릴 때 (초과 30분 단위)^2
     idle_sq=5.0,                # 개인별 총 유휴시간(대기+공백)의 볼록 페널티 — 한 사람에게 몰리는 것 방지
     missed=5000.0,
+    seed_missing=20000.0,       # 씨드(고정 배치) 자리를 못 채운 것 — 자리당.
+                                # 초안 40개 중 '씨드를 지킨 안'이 뽑히게 하는 항이다.
+                                # (Refiner는 씨드를 못 건드리므로 여기서만 의미가 있다.
+                                #  씨드가 없으면 0이라 기존 동작과 완전히 같다)
     min_games_short=900.0,      # 최소게임수 미달 (부족분)^2 — 어기지 않는 규칙. balance_under(400)보다 위
     guest_in_mixed=25.0,        # 혼복에 남자 게스트 1명당 — 혼복 남자 자리는 가급적 정회원이 (소프트)
     mixed_wish_short=350.0,     # 혼복희망 미달 (부족 게임수)^2. min_games_short(900)보다는 아래 —
@@ -519,6 +523,8 @@ def _arrange_seats(team: tuple, want) -> tuple:
     fixed = {i: pid for i, pid in enumerate(list(want or [])[:2]) if pid}
     if not fixed:
         return team
+    if len(set(fixed.values())) != len(fixed):
+        return team   # 같은 사람이 두 칸에 적힌 입력 — 한 사람을 두 번 앉히지 않는다
     by_id = {p["id"]: p for p in team}
     if any(pid not in by_id for pid in fixed.values()):
         return team
@@ -1447,6 +1453,19 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
         feasible_court_slots += min(n_courts, n_avail // 4)
     score += max(0, feasible_court_slots - len(state["matches"])) * G["missed"]
 
+    # 씨드(고정 배치) 미반영 자리 — 씨드가 없으면 pins가 비어 0이다(기존 동작 유지).
+    pins = state.get("pins") or []
+    if pins:
+        at = {(m["slot_start"], str(m["court"])): m for m in state["matches"]}
+        missing = 0
+        for pin in pins:
+            m = at.get((pin["slot_start"], str(pin["court"])))
+            for side in SIDES:
+                for pid in (pin.get(side) or []):
+                    if pid and (m is None or pid not in m[side]):
+                        missing += 1
+        score += G["seed_missing"] * missing
+
     return score
 
 
@@ -1904,6 +1923,7 @@ def run_one_seed(
     rng = random.Random(seed)
     pin_map, pin_slots, pin_court_of = build_pin_index(pins, players)
     state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots)
+    state["pins"] = list(pins or [])   # full_score가 미반영 자리를 세는 데 쓴다
 
     for slot in schedule_slots:
         played_here = set()
@@ -1919,7 +1939,12 @@ def run_one_seed(
             # 같은 클럽 동료까지 막지 않도록 (최대-SPREAD_CAP-1) 밑으로는 내려가지 않게 한다.
             for c, gl in club_games.items():
                 club_floor[c] = max(min(gl), max(gl) - (SPREAD_CAP + 1))
-        for court_name in slot["courts"]:
+        # 고정이 있는 코트를 먼저 채운다. 뒤로 미루면 그 경기를 완성할 '이름을 안 적은 자리'의
+        # 후보를 앞 코트가 데려가 버려, 입력 검증을 통과한 씨드가 코트만 비우고 끝난다
+        # (실측: 여자 4명 슬롯에서 C코트에 2자리만 고정 → 초안 39/40이 C코트 공석).
+        # 씨드가 없으면 정렬 키가 모두 같고 sorted는 안정 정렬이라 순서가 바뀌지 않는다.
+        for court_name in sorted(slot["courts"],
+                                 key=lambda c: (slot["slot_start"], str(c)) not in pin_map):
             pin = pin_map.get((slot["slot_start"], court_name))
             req = pin_ids(pin)
             # 씨드로 지정된 사람은 최대게임수·클럽격차 필터를 통과시킨다(사용자 지정이 우선).

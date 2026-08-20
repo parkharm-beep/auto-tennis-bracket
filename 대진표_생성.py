@@ -261,11 +261,14 @@ def cmd_check(args) -> int:
                     for pid in (pin.get(side) or []) if pid)
         by_name = {p["id"]: p["name"] for p in players}
         print(f"  씨드 고정 {seats}자리 (경기 {len(pins)}개) - 나머지 자리만 알고리즘이 채웁니다")
+        # 빈 자리를 접어서 보여주면 한 칸 어긋난 입력이 그럴듯해 보인다 - 자리표시자로 남긴다
+        def _seat(v):
+            return by_name.get(v, "?") if v else "_"
         for pin in sorted(pins, key=lambda x: (x["slot_start"], str(x["court"]))):
-            t1 = " ".join(by_name.get(i, "?") for i in (pin.get("team1") or []) if i)
-            t2 = " ".join(by_name.get(i, "?") for i in (pin.get("team2") or []) if i)
+            t1 = " ".join(_seat(i) for i in (pin.get("team1") or [None, None]))
+            t2 = " ".join(_seat(i) for i in (pin.get("team2") or [None, None]))
             hh = f"{pin['slot_start'] // 60:02d}:{pin['slot_start'] % 60:02d}"
-            print(f"    - {hh} {pin['court']}코트: {t1 or '(빈칸)'} vs {t2 or '(빈칸)'}")
+            print(f"    - {hh} {pin['court']}코트: {t1} vs {t2}")
 
     print()
     if warnings:
