@@ -51,6 +51,15 @@ W = dict(
     #   쉰 시간이 길수록 커지므로 한 번 밀린 사람이 계속 밀리는 악순환이 생기지 않는다.
     min_games_deficit=35.0,     # 최소게임수 미달자를 먼저 투입 (부족 게임수 1당, 음수 비용)
     min_games_critical=600.0,   # 남은 가용 슬롯이 부족분과 같으면 지금 무조건 태워야 함 (음수 비용)
+    balance_critical=300.0,     # 공평 목표 대비 부족한데 남은 기회가 없으면 지금 태운다 (음수 비용).
+                                # min_games_critical(600)보다는 아래 — 사용자가 직접 적은
+                                # 최소게임수 보장이 공평 목표보다 우선이다.
+                                # (같은 시간 나왔는데도 먼저 떠나는 사람이 뒤에 남는 사람에게
+                                #  밀려 게임수를 못 채우고 끝나는 것을 막는다)
+    balance_over=150.0,         # 공평 목표(올림)를 이미 채운 사람을 또 태움 (초과 게임수 1당).
+                                # balance_critical과 짝 — '못 채운 사람을 당기는' 항만 있으면
+                                # 아무도 미달이 아닌 채로 위쪽만 튀는 초안(예: 전원 3인데 두 명만 5)이
+                                # 그리디에서 그대로 만들어지고, 그런 초안은 전역 점수로도 못 뒤집는다.
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 — 강하게 회피 (인원상 불가피하면 양보)
     couple_want_pair=40.0,      # '원함' 부부가 혼복 같은 팀 — 우대 (음수 비용). 혼복 자체를 늘리진 않게 약하게
     guest_in_mixed=30.0,        # 남자 게스트는 혼복보다 남복 위주 — 혼복에 남자 게스트 1명당 페널티.
@@ -76,6 +85,10 @@ G = dict(
     balance_spread=30.0,
     balance_under=400.0,        # 공평 기준(내림)보다도 덜 뛰는 사람 (부족분)^2 — 사실상 금지
     balance_short=170.0,        # 공평 기준에 0.5게임 넘게 못 미치는 사람 (초과분)^2
+    balance_cap_gap=500.0,      # 가용 능력(caps)이 같은 사람끼리 게임수가 2게임 이상 벌어짐 (초과분)^2.
+                                # "가용 시간이 같은 사람끼리는 최대 1게임 차" (26.9.3 사용자 요구).
+                                # balance_under(400) 위, min_games_short(900) 아래 —
+                                # 개인별 최소게임수 보장과 부딪히면 최소게임수가 이긴다.
     gender_fairness=420.0,      # 한쪽 성별 평균이 전체 평균보다 낮게 굳는 것을 방지 (초과분)^2
     # ↑ 여자가 4명뿐이면 여복은 '4명 통째'로만 늘어나므로, 개인 단위 균형만으로는
     #   "부족분 몫을 항상 여자 4명이 진다"가 비용상 동점이 되어 그대로 채택된다.
@@ -222,6 +235,23 @@ def min_games_critical(p: dict, slot_start: int, state: dict) -> bool:
         return False
     later = tuple(s for s in (p.get("available_slots") or ()) if s > slot_start)
     return max_games_streak(later, p.get("streak") or "") < deficit
+
+
+def player_caps(players: list[dict]) -> dict:
+    """개인별로 실제 뛸 수 있는 최대 게임수 — 최대게임수와 개인 연속게임 규칙을 함께 반영.
+
+    가용 슬롯 수만 세면 연속게임 규칙(기본 2연속까지)을 무시해 공평 목표치를 과대 계산한다.
+    (예: 붙어 있는 4슬롯 → 실제로는 3게임이 한계인데 4로 본다)
+    """
+    return {
+        p["id"]: min(
+            p["max_games"] if p.get("max_games") else 10 ** 6,
+            max_games_streak(tuple(p.get("available_slots") or ()),
+                             p.get("streak") or ""),
+        )
+        for p in players
+    }
+
 
 COURT_AFFINITY = {
     "A": {"M": 1.0, "F": 0.0, "X": 0.0},
@@ -558,6 +588,44 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         bal_members.setdefault(bkey(p), []).append(p["id"])
     mixed_min, mixed_max = mixed_limits(players, schedule_slots, multi)
     couple_pref, couple_list = build_couples(players, couples)
+
+    # 공평 목표치(물채우기)의 내림값. 그리디가 "이 사람에게 남은 기회가 몇 번인가"를
+    # 보고 마감이 임박한 사람을 먼저 태우는 기준으로 쓴다(balance_critical).
+    # 배정이 쌓여도 목표 자체는 변하지 않으므로 초안 생성 시작 시 1회만 계산한다.
+    caps = player_caps(players)
+    # ⚠ 이론 자리(코트수×4)가 아니라 **실제로 채울 수 있는 자리**를 센다 —
+    # 그 시간에 가용 인원이 4명 미만인 코트는 어차피 못 채운다.
+    # (같은 식이 web/py/run.py·parse_input.py의 최소게임수 경고에도 쓰인다)
+    total_seats = 0
+    for sl in (schedule_slots or []):
+        n_avail = sum(1 for p in players if sl["slot_start"] in (p.get("available_slots") or ()))
+        total_seats += min(len(sl.get("courts") or ()), n_avail // 4) * 4
+    fair_floor, fair_ceil = {}, {}
+
+    def _fill(ids, seats):
+        """이 그룹의 공평 목표치를 내림·올림으로 나눠 담는다.
+
+        ⚠ 자리가 남아도는 명단(seats >= 그룹 전원의 cap 합)에서는 담지 않는다 —
+        그때는 물채우기가 포화해 전원의 목표가 자기 cap과 같아지고, 그러면
+        balance_critical이 거의 모든 후보에 똑같이 붙어 신호가 아니라 잡음이 된다
+        (실측: 13명 샘플에서 최소 게임수가 3 → 2로 내려갔다).
+        자리가 모자랄 때만 목표치가 '누구를 덜 태울지'를 실제로 가른다.
+        """
+        ids = list(ids)
+        if not ids or seats >= sum(caps[i] for i in ids):
+            return
+        for i, t in fair_targets(ids, caps, seats).items():
+            fair_floor[i] = int(t + 1e-9)
+            fair_ceil[i] = -int(-t // 1)          # ceil (부동소수 오차 없이)
+
+    # ⚠ 교류전에는 쓰지 않는다. "팀=같은 클럽, 상대=다른 클럽"이 하드 규칙이라 클럽별 자리는
+    # 정확히 절반씩이고, 성별 축은 더 어긋난다(혼복은 클럽당 남1·여1을 써서 성별 자리 수가
+    # 인원 비율과 무관하다). 인원 비율로 나누면 값이 방향까지 뒤집힌다 — 독립 리뷰 실측:
+    # A클럽 16명·B클럽 8명·자리 96에서 코드 가정은 양쪽 4.00인데 구조적 진실은 3.00 대 6.00이라
+    # B클럽 전원이 상시 balance_over를, A클럽 전원이 상시 balance_critical을 받는다.
+    # 교류전 게임수 균형은 종전대로 (클럽,성별) 그룹 평균·SPREAD_CAP이 담당한다.
+    if total_seats and not multi:
+        _fill([p["id"] for p in players], total_seats)
     n_m_total = sum(1 for p in players if p["gender"] == "M")
     n_f_total = len(players) - n_m_total
     return {
@@ -584,6 +652,11 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         "gender_sum": {"M": 0, "F": 0},
         "hist_pair_penalty": hist_pair_penalty,
         "eff_in": build_eff_in(players),
+        # 공평 목표치(내림/올림) — 그리디의 balance_critical·balance_over 판정 기준.
+        "fair_floor": fair_floor,
+        "fair_ceil": fair_ceil,
+        # 개인별 가용 능력(상수). balance_cost가 다듬기마다 재계산하면 초안 생성이 40% 느려진다.
+        "player_caps": caps,
         # 혼복 판수의 하한/상한. 교류전도 같은 규칙(팀은 같은 클럽 남1+여1이 되는지까지 확인).
         "mixed_min": mixed_min,
         "mixed_quota": mixed_max,
@@ -768,11 +841,51 @@ def match_cost(
 
         # 최소게임수 미달자는 우대 투입. 이 슬롯을 놓치면 (3연속 금지를 지키면서는)
         # 보장을 더는 못 채우는 상태면 사실상 강제로 태운다.
-        deficit = eff_min_games(p) - played
+        emg = eff_min_games(p)
+        deficit = emg - played
         if deficit > 0:
             cost -= W["min_games_deficit"] * deficit
             if min_games_critical(p, slot_start, state):
                 cost -= W["min_games_critical"]
+
+        # 공평 목표에 못 미치는데 남은 기회가 부족분만큼밖에 없으면 지금 태운다.
+        # (min_games_critical과 같은 원리를 '공평 목표'에도 적용 — 곧 떠나는 사람이
+        #  뒤에 남는 사람에게 밀려 게임수를 못 채우고 끝나는 것을 막는다)
+        # ⚠ 하한은 '공평 목표(내림)'와 '본인 최소게임수 보장' 중 **큰 쪽**이다.
+        # 최소게임수는 어기지 않는 규칙이므로, 공평 목표만 보면 보장 대상이 아닌 사람이
+        # -300(balance_critical)으로 보장 대상자(-35/게임 min_games_deficit)를 밀어낸다
+        # (독립 리뷰 재현: 20명·10슬롯·코트2면, 앞 10명 최소5 → 보장 미달 발생).
+        # min_games_critical(-600)은 마지막 기회에만 발동해 그때는 이미 자리가 없다.
+        floor_i = state.get("fair_floor", {}).get(p["id"], 0)
+        if emg > floor_i:
+            floor_i = emg
+        need = floor_i - played
+        if need > 0:
+            later = tuple(s for s in (p.get("available_slots") or ()) if s > slot_start)
+            # ⚠ 부등호가 min_games_critical(`<`)과 다르게 `<=`인 것은 의도적이다.
+            # `<`는 '지금 안 태우면 수학적으로 불가능'인 마지막 순간에만 발동한다 —
+            # 최소게임수처럼 후보 필터가 따로 강제해 주는 하드 보장에는 그게 맞다(늦게 개입할수록
+            # 다른 목표를 덜 망친다). 하지만 공평 목표는 소프트라 강제 장치가 없고, 게임수는
+            # Refiner가 못 고치므로 기회를 한 번밖에 안 주면 놓친다.
+            # 실측(실전 22명·샘플 21명 각 4시드): `<=`는 8/8에서 cap 그룹 격차 ≤1을 달성했고
+            # `<`는 시드 42에서 격차 2로 실패했다. 최소게임수 보장은 양쪽 다 지켜진다
+            # (그 결함의 원인은 부등호가 아니라 balance_over의 상한이었다).
+            if max_games_streak(later, mode) <= need:
+                cost -= W["balance_critical"]
+
+        # 반대쪽: 공평 목표(올림)를 이미 채운 사람을 또 태우는 것을 누른다.
+        # 위쪽을 안 누르면 '미달자는 없는데 두 명만 5게임'인 초안이 그대로 나오고,
+        # 게임수는 Refiner가 못 바꾸므로 그 초안은 나중에 고칠 방법이 없다.
+        # ⚠ 상한은 '공평 목표(올림)'와 '본인 최소게임수 보장' 중 **큰 쪽**이다.
+        # 최소게임수는 어기지 않는 규칙이라, 공평 목표가 그보다 낮다고 그 사람을 누르면
+        # 보장이 깨진다 (실측: 남20·1코트·10슬롯에서 최소7을 적은 사람이 5게임으로 떨어졌다 —
+        # 7번째 배정의 balance_over +750이 min_games_critical -600을 이겼다).
+        ceil_i = state.get("fair_ceil", {}).get(p["id"], 10 ** 6)
+        if emg > ceil_i:
+            ceil_i = emg
+        over = played + 1 - ceil_i
+        if over > 0:
+            cost += W["balance_over"] * over
 
     if match_type == "F" and state.get("multi_club"):
         # 교류전: 여복(여자복식)을 최우선 — 양 클럽에 여자 2명 이상이면 혼복보다 여복.
@@ -862,12 +975,27 @@ def enumerate_candidates(
         ref = (max(slots) + 30) if slots else eff_in.get(p["id"], slot_start)
         return slot_start - ref
 
-    # 최소게임수 미달자 → 게임수가 적은 사람 → 오래 쉰 사람 순.
+    def _fair_urgent(p):
+        """공평 목표를 못 채운 채 기회가 떨어져 가는 사람인가 (match_cost의 balance_critical과 동일 기준).
+
+        정렬 키에 안 넣으면 그 사람이 top_k·SINGLES_TOP 절단 밖으로 밀려 **조합 자체가
+        생성되지 않아** match_cost의 우대가 닿지 못한다 (독립 리뷰 실측: 발동 후보의 31%가 절단).
+        최소게임수 미달자·씨드 고정자에 이미 쓰고 있는 처방과 같다.
+        """
+        floor_i = max(state.get("fair_floor", {}).get(p["id"], 0), eff_min_games(p))
+        need = floor_i - state["player_games"][p["id"]]
+        if need <= 0:
+            return 0
+        later = tuple(s for s in (p.get("available_slots") or ()) if s > slot_start)
+        return 1 if max_games_streak(later, p.get("streak") or "") <= need else 0
+
+    # 최소게임수 미달자 → 공평 목표 임박자 → 게임수가 적은 사람 → 오래 쉰 사람 순.
     # 미달자가 top_k 밖으로 밀려 후보에조차 못 드는 일을 막는다.
     pool_sorted = sorted(
         working_pool,
         key=lambda p: (
             -max(0, eff_min_games(p) - state["player_games"][p["id"]]),
+            -_fair_urgent(p),
             state["player_games"][p["id"]],
             -min(_pending(p), 120),
             1 if is_two_streak(p["id"], slot_start, state) else 0,
@@ -1331,13 +1459,9 @@ def fair_targets(ids: list[str], caps: dict, total_games: int) -> dict:
 
 def balance_cost(state: dict, players: list[dict]) -> float:
     pbid = {p["id"]: p for p in players}
-    caps = {
-        p["id"]: min(
-            p["max_games"] if p.get("max_games") else 10 ** 6,
-            len(p.get("available_slots") or []),
-        )
-        for p in players
-    }
+    # 가용 슬롯 수가 아니라 '연속게임 규칙까지 지키며 뛸 수 있는 최대 게임수'가 상한이다.
+    # (상수이므로 init_state가 계산해 둔 것을 쓴다 — 매 호출 재계산하면 초안 생성이 40% 느려진다)
+    caps = state.get("player_caps") or player_caps(players)
     groups = (state["bal_members"].values() if state.get("multi_club")
               else [[p["id"] for p in players]])
     cost = 0.0
@@ -1359,6 +1483,20 @@ def balance_cost(state: dict, players: list[dict]) -> float:
             frac = targets[i] - g - 0.5
             if frac > 0:
                 cost += G["balance_short"] * frac * frac
+
+        # 사용자 요구(26.9.3): 가용 능력이 같은 사람끼리는 최대 1게임 차.
+        # 개인별 최소·최대게임수를 적은 사람은 의도적으로 다르므로 제외(review와 같은 기준).
+        by_cap = {}
+        for i in ids:
+            p = pbid[i]
+            if p.get("max_games") or p.get("min_games"):
+                continue
+            by_cap.setdefault(caps[i], []).append(state["player_games"][i])
+        for gs in by_cap.values():
+            if len(gs) > 1:
+                over = (max(gs) - min(gs)) - 1
+                if over > 0:
+                    cost += G["balance_cap_gap"] * over * over
 
         # 성별 쏠림 방지: 인원이 적은 성별(예: 여자 4명)은 복식 특성상 '통째로' 움직여
         # 부족분 몫을 매번 그 그룹이 지게 되기 쉽다. 그룹 평균으로 한 번 더 본다.
@@ -2059,6 +2197,10 @@ def solve(
             "club": p.get("club", ""),
             "games": best_state["player_games"][pid],
             "available_slots": len(p["available_slots"]),
+            # 연속게임 규칙까지 반영한 '뛸 수 있는 최대 게임수'.
+            # review가 "가용 능력이 같은 사람끼리" 격차를 볼 때 쓰는 그룹 키다
+            # (같은 슬롯 수라도 연속게임=금지면 실제 능력이 낮다).
+            "cap": max_games_streak(tuple(p["available_slots"]), p.get("streak") or ""),
             "slots_played": slots,
             "in_min": p["in_min"],
             "out_min": p["out_min"],

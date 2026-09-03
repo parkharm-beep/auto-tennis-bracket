@@ -221,6 +221,11 @@ function handleDone({ xlsx, review, summary, elapsed }) {
       <p><strong>참가자</strong> ${summary.players}명 · <strong>코트</strong> ${summary.courts}개 · <strong>매치</strong> ${summary.matches}개</p>
       <p><strong>판정</strong>: <span class="verdict verdict-${v.toLowerCase()}">${v}</span></p>
       <p><strong>게임수</strong> 평균 ${s.games_avg} (min ${s.games_min} / max ${s.games_max}, 격차 ${s.game_gap_global})</p>
+      <p><strong>같은 시간 나온 사람끼리 게임수 격차</strong> 최대 ${s.max_group_gap ?? 0} (1 이하가 목표)${
+        (s.game_gap_seed_excluded || []).length
+          ? ` · 씨드로 직접 고정한 ${s.game_gap_seed_excluded.length}명은 비교에서 제외`
+          : ""
+      }</p>
       <p><strong>페어 중복</strong> ${s.pair_dup_count}쌍 · <strong>완전 중복 대진</strong> ${s.matchup_repeats ?? 0}건 · <strong>3연속</strong> ${s.three_consec}건</p>
       <p><strong>복식 구성</strong> 남복 ${(s.type_count || {}).M ?? 0} / 여복 ${(s.type_count || {}).F ?? 0} / 혼복 ${(s.type_count || {}).X ?? 0} (혼복 ${Math.round((s.mixed_ratio || 0) * 100)}%)</p>
       <p><strong>1시간 이상 공백</strong> ${s.long_gaps ?? 0}건 / ${s.long_gap_players ?? 0}명 (최장 ${s.long_gap_worst ?? 0}분) · <strong>마지막 경기 종료</strong> ${s.last_match_end || "-"}</p>

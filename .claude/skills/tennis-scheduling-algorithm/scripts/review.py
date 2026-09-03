@@ -14,7 +14,8 @@ from collections import defaultdict
 
 THRESHOLDS = dict(
     game_gap_global=4,
-    game_gap_group=2,
+    game_gap_group=1,      # 가용 능력이 같은 사람끼리는 최대 1게임 차 (26.9.3 사용자 요구).
+                           # 2게임 차부터 이슈 + RETRY.
     pair_dup_rate=0.05,
     three_consec_per_player=0,  # 3연속 출전은 하드 금지 — 1건이라도 나오면 RETRY (알고리즘 버그)
     two_consec_banned=0,        # 개인 '연속게임=금지'의 2연속은 하드 금지
@@ -101,13 +102,32 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
                 within_gaps.append(max(vs) - min(vs))
     scores["game_gap_within_club"] = max(within_gaps, default=0)
 
+    # 그룹 키는 '가용 능력'(연속게임 규칙까지 반영한, 뛸 수 있는 최대 게임수).
+    # 슬롯 수로 묶으면 연속게임=금지인 사람이 같은 그룹에 들어가 실제보다 큰 격차로 잡힌다.
+    # (구버전 02_bracket.json에는 cap이 없으므로 슬롯 수로 대체)
+    pins = parsed.get("pins") or []
+    pin_slots_by_pid: dict = {}
+    for pin in pins:
+        for _pid in [x for x in list(pin.get("team1") or []) + list(pin.get("team2") or []) if x]:
+            pin_slots_by_pid.setdefault(_pid, set()).add(pin["slot_start"])
+
+    # 개인별 최대/최소 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 **그 지정값까지
+    # 그룹 키에 넣어** 같은 조건끼리만 비교한다. 종전처럼 통째로 빼면, 전원이 같은 최소게임수를
+    # 적은 명단에서는 그룹이 비어 공평성 검사가 조용히 꺼진다.
+    # ⚠ 씨드(고정 배치)로 자리를 직접 정해 둔 사람은 **사용자가 만든 격차**이므로 분리한다.
+    # 재시도로 고칠 수 없는 것을 RETRY 사유로 삼으면 끝나지 않는다 —
+    # three_consec_seed·max_games_seed와 같은 처방이다.
     groups = defaultdict(list)
+    seed_gap_players = []
     for s in player_stats:
-        # 개인별 최대/최소 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 균형 비교에서 제외
-        if s.get("max_games") is not None or s.get("min_games"):
+        if pin_slots_by_pid.get(s["id"]):
+            seed_gap_players.append(s["name"])
             continue
-        key = (s.get("club", ""), s.get("gender"), s["available_slots"]) if is_exchange else s["available_slots"]
+        cap = s.get("cap", s["available_slots"])
+        spec = (s.get("min_games") or 0, s.get("max_games") or 0)
+        key = (s.get("club", ""), s.get("gender"), cap, spec) if is_exchange else (cap, spec)
         groups[key].append(s)
+    scores["game_gap_seed_excluded"] = seed_gap_players
     group_gaps = []
     for grp_key, members in groups.items():
         if len(members) < 2:
@@ -116,10 +136,17 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         gap = max(gs) - min(gs)
         group_gaps.append((grp_key, gap))
         if gap > THRESHOLDS["game_gap_group"]:
-            if is_exchange and isinstance(grp_key, tuple):
-                label = f"{grp_key[0]}/{grp_key[1]} · 가용슬롯 {grp_key[2]}개"
+            spec = grp_key[3] if is_exchange else grp_key[1]
+            spec_s = ""
+            if spec[0]:
+                spec_s += f"·최소{spec[0]}"
+            if spec[1]:
+                spec_s += f"·최대{spec[1]}"
+            if is_exchange:
+                label = f"{grp_key[0]}/{grp_key[1]} · 가용 최대 {grp_key[2]}게임{spec_s}"
             else:
-                label = f"가용슬롯 {grp_key}개"
+                unit = "게임" if any("cap" in m for m in members) else "슬롯"
+                label = f"가용 최대 {grp_key[0]}{unit}{spec_s}"
             issues.append({
                 "severity": "high",
                 "code": "game_gap_group",
@@ -133,11 +160,6 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     # 자리를 못 채웠으면 사용자가 명시적으로 요구한 것을 못 지킨 것이므로 PASS를 주지 않는다
     # (아래 verdict 판정에서 RETRY). 다만 재시도로 못 고치는 입력일 수도 있어 메시지에 무엇을
     # 확인해야 하는지 적는다 — 입력 검사(parse_seed)가 대부분을 미리 에러로 막는다.
-    pins = parsed.get("pins") or []
-    pin_slots_by_pid: dict = {}
-    for pin in pins:
-        for _pid in [x for x in list(pin.get("team1") or []) + list(pin.get("team2") or []) if x]:
-            pin_slots_by_pid.setdefault(_pid, set()).add(pin["slot_start"])
     match_at = {(m["slot_start"], str(m["court"])): m for m in matches}
     seed_seats, seed_kept = 0, 0
     for pin in pins:
@@ -652,7 +674,7 @@ def print_report(review: dict) -> None:
     print("=" * 60)
     print(f"매치 수: {s['match_count']}  (남복 {s['type_count'].get('M',0)} / 여복 {s['type_count'].get('F',0)} / 혼복 {s['type_count'].get('X',0)})")
     print(f"게임수: min={s['games_min']}, max={s['games_max']}, avg={s['games_avg']}, 전체격차={s['game_gap_global']}")
-    print(f"가용슬롯 그룹 내 최대 격차: {s['max_group_gap']}")
+    print(f"가용 능력(최대 게임수) 그룹 내 최대 격차: {s['max_group_gap']}")
     print(f"페어 중복: {s['pair_dup_count']}쌍 ({s['pair_dup_rate']*100:.1f}%)")
     print(f"같은 4명 재대결: 편 바꿔 {s.get('quad_repeats', 0)}회 / 상대편까지 그대로 {s.get('matchup_repeats', 0)}회")
     if s.get("history_pairs_available"):
