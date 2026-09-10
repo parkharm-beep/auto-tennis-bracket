@@ -515,6 +515,8 @@ def render(parsed: dict, bracket: dict, out_path: str, date_str: str, title: str
             info += " / 3연속 허용"
         if p.get("max_games") is not None:
             info += f" / 최대 {p['max_games']}게임"
+        if p.get("filler"):
+            info += " / 채움"
         if is_exchange and p.get("club"):
             info += f" · {p['club']}"
         ci = ws.cell(row=row + 1, column=num_col + 1, value=info)

@@ -195,7 +195,7 @@ def min_to_hhmm(v: int) -> str:
     return f"{v // 60:02d}:{v % 60:02d}"
 
 
-def parse_players(ws) -> tuple[list[dict], list[str]]:
+def parse_players(ws, extra_warnings: list | None = None) -> tuple[list[dict], list[str]]:
     headers = [str(c.value).strip() if c.value else "" for c in ws[1]]
     required = ["이름", "성별", "구력", "구분", "IN시간", "OUT시간"]
     for r in required:
@@ -300,6 +300,24 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
                     else:
                         raise ValueError(
                             f"'{name}': 연속게임은 '금지' 또는 '허용'만 입력하세요 (현재: '{raw}')")
+
+            # 채움 (선택): '예'면 다른 사람 배정이 끝난 뒤 남는 자리에만 들어간다(최소게임수는 보장).
+            # 인식 못 할 값은 연속게임과 달리 에러로 막지 않고 경고 후 비운 것으로 본다 —
+            # 이 칸 하나 때문에 대진표 생성 자체가 막히면 안 되므로.
+            filler = False
+            if "채움" in col_idx:
+                raw = row[col_idx["채움"]]
+                raw_str = "" if raw is None else str(raw).strip()
+                normalized = raw_str.replace(" ", "").upper()
+                if normalized in {"예", "Y", "O", "TRUE", "채움", "1"}:
+                    filler = True
+                elif normalized in {"", "아니오", "N", "X", "FALSE", "0"}:
+                    filler = False
+                else:
+                    if extra_warnings is not None:
+                        extra_warnings.append(
+                            f"'{name}': '채움' 칸의 값 '{raw}'을(를) 알 수 없어 비운 것으로 봅니다(예 또는 빈칸)")
+                    filler = False
         except (ValueError, TypeError) as e:
             errors.append(str(e))
             continue
@@ -317,6 +335,7 @@ def parse_players(ws) -> tuple[list[dict], list[str]]:
             "min_games": min_games,
             "mixed_wish": mixed_wish,
             "streak": streak,
+            "filler": filler,
         })
         pid += 1
 
@@ -751,8 +770,9 @@ def main():
         sys.exit(1)
 
     all_errors = []
+    filler_warnings: list[str] = []
     try:
-        players, perr = parse_players(wb["참가자"])
+        players, perr = parse_players(wb["참가자"], extra_warnings=filler_warnings)
         all_errors.extend(perr)
     except ValueError as e:
         print(f"[에러] {e}", file=sys.stderr)
@@ -781,7 +801,7 @@ def main():
     attach_available_slots(players, schedule_slots)
 
     # 경고 수집
-    warnings = []
+    warnings = list(filler_warnings)
     males = [p for p in players if p["gender"] == "M"]
     females = [p for p in players if p["gender"] == "F"]
     if len(males) < 4:
@@ -798,6 +818,10 @@ def main():
     for p in players:
         if len(p["available_slots"]) == 0:
             warnings.append(f"'{p['name']}': 가용 슬롯 없음 — 코트 운영 시간과 IN/OUT 범위 확인 필요")
+        # ⚠ '채움'인데 최소게임수가 비어 0게임이 되는 것은 **의도된 상태**다
+        #   (사용자 확정 26.9.10: "0으로 되도 돼", "최소게임수 만들지마").
+        #   경고를 걸면 회장이 채움으로 상시 지정돼 있어 매주 뜨는 잡음이 된다.
+        #   대신 --check 요약이 '채움 역할 N명(남는 자리만)'으로 사실만 알린다.
         if p["max_games"] is not None and p["max_games"] > len(p["available_slots"]):
             warnings.append(f"'{p['name']}': 최대게임수({p['max_games']}) > 가용 슬롯수({len(p['available_slots'])}) — 가용 슬롯 한도로 자연 제한됨")
         streak = p.get("streak") or ""
@@ -810,6 +834,13 @@ def main():
             else:
                 cap_label = "3연속 없이 가능한 최대"
             warnings.append(f"'{p['name']}': 최소게임수({p['min_games']}) > {cap_label}({cap}게임) — {cap}게임까지만 보장됨")
+    # ⚠ '채움'은 교류전(클럽 2개 이상)에서는 적용되지 않는다 — 공평 목표(fair_floor/ceil)를
+    #   교류전에서는 아예 안 잡기 때문이다. 조용히 무시하면 사용자는 적용된 줄 안다.
+    _clubs = {p.get("club", "") for p in players if p.get("club", "")}
+    if len(_clubs) > 1 and any(p.get("filler") for p in players):
+        _fn = ", ".join(p["name"] for p in players if p.get("filler"))
+        warnings.append(f"교류전에서는 '채움'이 적용되지 않습니다 (무시됨): {_fn}")
+
     warnings.extend(clamp_mixed_wish(players))
 
     # 씨드대진: 참가자 명단이 있어야 이름 대조가 되므로 반드시 위 참가자·코트 파싱 이후,

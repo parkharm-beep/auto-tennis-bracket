@@ -112,7 +112,7 @@ _call_ms
       const prevNote = prev1 || prev2 ? " · 지난 대진표 페어 회피 반영" : "";
       postMessage({
         type: "log",
-        msg: `대진 생성 중 (시드 ${seed}, 초안 ${iters}개 → 공백·대기 줄이기)${prevNote}… 20~60초 걸릴 수 있습니다.`,
+        msg: `대진 생성 중 (시드 ${seed}, 초안 ${iters}개 → 공백·대기 줄이기)${prevNote}… 20~60초 걸릴 수 있습니다. 품질 미달이면 시드를 바꿔 다시 뽑습니다(최대 3회).`,
       });
 
       const callGen = pyodide.runPython(`

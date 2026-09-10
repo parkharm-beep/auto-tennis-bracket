@@ -85,6 +85,12 @@ G = dict(
     balance_spread=30.0,
     balance_under=400.0,        # 공평 기준(내림)보다도 덜 뛰는 사람 (부족분)^2 — 사실상 금지
     balance_short=170.0,        # 공평 기준에 0.5게임 넘게 못 미치는 사람 (초과분)^2
+    balance_over_g=400.0,       # 공평 목표(내림)를 넘겨 뛴 사람 (초과분)^2 — balance_under의 짝.
+                                # 그리디의 W[balance_over]와 같은 기준(state의 fair_ceil)을 쓴다.
+                                # ⚠ 이 값을 낮춰도 결과가 안 바뀐다 — 게임수는 그리디에서
+                                # 결정되고 Refiner가 못 바꾸므로 전역 항은 초안 '선택'에만
+                                # 관여한다(실측 9/12 실전 21명 3시드: 400/200/100 전부 동일).
+                                # 공백을 되돌리려면 여기가 아니라 그리디를 손대야 한다.
     balance_cap_gap=500.0,      # 가용 능력(caps)이 같은 사람끼리 게임수가 2게임 이상 벌어짐 (초과분)^2.
                                 # "가용 시간이 같은 사람끼리는 최대 1게임 차" (26.9.3 사용자 요구).
                                 # balance_under(400) 위, min_games_short(900) 아래 —
@@ -593,6 +599,8 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
     # 보고 마감이 임박한 사람을 먼저 태우는 기준으로 쓴다(balance_critical).
     # 배정이 쌓여도 목표 자체는 변하지 않으므로 초안 생성 시작 시 1회만 계산한다.
     caps = player_caps(players)
+    is_filler = {p["id"]: bool(p.get("filler")) for p in players}
+    filler_min = {p["id"]: eff_min_games(p) for p in players if p.get("filler")}
     # ⚠ 이론 자리(코트수×4)가 아니라 **실제로 채울 수 있는 자리**를 센다 —
     # 그 시간에 가용 인원이 4명 미만인 코트는 어차피 못 채운다.
     # (같은 식이 web/py/run.py·parse_input.py의 최소게임수 경고에도 쓰인다)
@@ -612,11 +620,24 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         자리가 모자랄 때만 목표치가 '누구를 덜 태울지'를 실제로 가른다.
         """
         ids = list(ids)
+        # '채움' 역할: 공평 목표 배분에서 빠지고 맨 나중에 들어간다.
+        # 다만 본인 최소게임수만큼은 보장되므로 그만큼 자리를 미리 뺀다.
+        fillers = [i for i in ids if is_filler.get(i)]
+        ids = [i for i in ids if not is_filler.get(i)]
+        for i in fillers:
+            t = min(filler_min.get(i, 0), caps.get(i, 10 ** 6))
+            fair_floor[i] = t
+            fair_ceil[i] = t
+            seats -= t
+        seats = max(0, seats)
         if not ids or seats >= sum(caps[i] for i in ids):
             return
         for i, t in fair_targets(ids, caps, seats).items():
             fair_floor[i] = int(t + 1e-9)
-            fair_ceil[i] = -int(-t // 1)          # ceil (부동소수 오차 없이)
+            # 상한도 **내림**이다. 올림으로 두면 상한이 실제 자리보다 훨씬 헐거워져
+            # (실측 9/12: 자리 80인데 상한 합 91) '5게임'이 상한 안이 되어 아무것도 막지 못한다.
+            # 목표를 넘겨야만 채울 수 있는 자리는 balance_over를 물고 fallback으로 채워진다.
+            fair_ceil[i] = int(t + 1e-9)
 
     # ⚠ 교류전에는 쓰지 않는다. "팀=같은 클럽, 상대=다른 클럽"이 하드 규칙이라 클럽별 자리는
     # 정확히 절반씩이고, 성별 축은 더 어긋난다(혼복은 클럽당 남1·여1을 써서 성별 자리 수가
@@ -880,12 +901,17 @@ def match_cost(
         # 최소게임수는 어기지 않는 규칙이라, 공평 목표가 그보다 낮다고 그 사람을 누르면
         # 보장이 깨진다 (실측: 남20·1코트·10슬롯에서 최소7을 적은 사람이 5게임으로 떨어졌다 —
         # 7번째 배정의 balance_over +750이 min_games_critical -600을 이겼다).
-        ceil_i = state.get("fair_ceil", {}).get(p["id"], 10 ** 6)
-        if emg > ceil_i:
-            ceil_i = emg
-        over = played + 1 - ceil_i
-        if over > 0:
-            cost += W["balance_over"] * over
+        # ⚠ '채움' 지정자는 여기서 면제한다. 그 사람을 **뒤로 미는** 일은 cap_filter가 하고,
+        #   여기서 초과 페널티까지 물리면 남는 자리가 있는데도 안 들어가 **경기가 통째로
+        #   사라진다**(독립 리뷰 실측: 13명 샘플 14경기 → 13경기, 다른 3명도 같이 손해).
+        #   "남는 자리에 배치한다"는 지시는 '덜 태운다'이지 '자리를 버린다'가 아니다.
+        if not p.get("filler"):
+            ceil_i = state.get("fair_ceil", {}).get(p["id"], 10 ** 6)
+            if emg > ceil_i:
+                ceil_i = emg
+            over = played + 1 - ceil_i
+            if over > 0:
+                cost += W["balance_over"] * over
 
     if match_type == "F" and state.get("multi_club"):
         # 교류전: 여복(여자복식)을 최우선 — 양 클럽에 여자 2명 이상이면 혼복보다 여복.
@@ -957,6 +983,7 @@ def enumerate_candidates(
     top_k: int = 10,
     court_name: str = "",
     require_ids: frozenset = frozenset(),
+    cap_filter: bool = False,
 ) -> list[tuple[float, str, tuple, tuple]]:
     # 기본 모드는 3연속 하드 금지, 개인 'no2'는 2연속도 금지한다.
     # 'ok3'로 명시한 사람만 개인 면제. 최소게임수 보장은 min_games_critical이
@@ -967,6 +994,43 @@ def enumerate_candidates(
                     if p["id"] in require_ids or not blocks_by_streak(p, slot_start, state)]
     if len(working_pool) < 4:
         return []   # 3연속 없이 코트를 채울 수 없으면 이 코트는 비운다
+
+    # 종목(남복/여복/혼복) 판정 게이트는 **상한 필터 이전의 풀**로 본다.
+    # 필터 때문에 여자가 4명 밑으로 내려가면 clean_singles_available이 거짓이 되어
+    # 혼복 억제(single_mixed_nonpriority)가 부당하게 풀린다 (독립 리뷰 HIGH 검출).
+    gate_pool = working_pool
+
+    if cap_filter:
+        fc = state.get("fair_ceil") or {}
+        # ⚠ 딕셔너리가 비었는지가 아니라 **이 풀에 상한이 잡힌 사람이 있는지**를 본다.
+        #   자리 과잉 명단에서 '채움' 지정자 한 명만 fair_ceil에 들어가도 dict는 truthy가 되어,
+        #   센티널(10**6) 덕에 우연히 동작하던 상태였다 (독립 리뷰 MEDIUM 검출).
+        if any(q["id"] in fc for q in working_pool):
+            def _exc(q):
+                return state["player_games"][q["id"]] - max(fc.get(q["id"], 10 ** 6),
+                                                            eff_min_games(q))
+            exc = {q["id"]: _exc(q) for q in working_pool}
+            kept = [q for q in working_pool
+                    if q["id"] in require_ids or exc[q["id"]] < 0]
+            if len(kept) >= 4:
+                # ⚠ 상한 필터가 **만들 수 있던 종목을 없애면 안 된다.**
+                #   여자 6명 중 2명이 상한에 걸리면 여복(4명)이 불가능해지는데, 남자는 남아 있어
+                #   후보 목록이 비지 않으므로 pick_match의 폴백도 안 걸린다 — 남복/여복 우선
+                #   원칙이 비용이 아니라 하드 필터에 뒤집힌다(26.8.7 여복 회귀와 같은 계열).
+                #   그래서 성별별로 '필터 전에 있던 만큼(최대 4명)'은 초과가 적은 순으로 되살린다.
+                kept_ids = {q["id"] for q in kept}
+                for gender in ("M", "F"):
+                    have = sum(1 for q in kept if q["gender"] == gender)
+                    pool_g = [q for q in working_pool if q["gender"] == gender]
+                    need = min(4, len(pool_g))
+                    if have >= need:
+                        continue
+                    spare = sorted((q for q in pool_g if q["id"] not in kept_ids),
+                                   key=lambda q: exc[q["id"]])
+                    for q in spare[: need - have]:
+                        kept.append(q)
+                        kept_ids.add(q["id"])
+                working_pool = kept
 
     eff_in = state.get("eff_in", {})
 
@@ -1080,8 +1144,12 @@ def enumerate_candidates(
 
     # 이 성별로 '아직 안 붙어본 4명 조합'이 남아있는가 — 없으면 재대결은 구조적으로 강제된다
     # (예: 여자 4명 → 조합이 하나뿐). 그때는 quad_repeat을 가볍게 물어 여복이 끊기지 않게 한다.
-    quad_forced_m = not fresh_quad_available(singles_m, state)
-    quad_forced_f = not fresh_quad_available(singles_f, state)
+    # ⚠ 게이트는 **필터 전 풀**(gate_pool) 기준이다 — 상한 필터가 인원을 줄였다는 이유로
+    #   "재대결이 강제됐다"고 판정하면 감면이 부당하게 열린다.
+    gate_m = [p for p in gate_pool if p["gender"] == "M"][:SINGLES_TOP]
+    gate_f = [p for p in gate_pool if p["gender"] == "F"][:SINGLES_TOP]
+    quad_forced_m = not fresh_quad_available(gate_m or singles_m, state)
+    quad_forced_f = not fresh_quad_available(gate_f or singles_f, state)
 
     if len(singles_m) >= 4:
         for combo in itertools.combinations(singles_m, 4):
@@ -1109,8 +1177,13 @@ def enumerate_candidates(
 
     if len(mixed_m) >= 2 and len(mixed_f) >= 2:
         # 남녀 어느 한쪽이라도 '중복 없는 단성 복식'을 더 못 만들면 혼복은 차선책으로 인정.
+        # ⚠ 여기도 **필터 전 풀** 기준 — 상한 필터로 여자가 줄어 혼복 억제가 풀리면
+        #   "여복 우선"이 필터 부작용으로 뒤집힌다(독립 리뷰 HIGH 검출).
+        gate_all_m = [p for p in gate_pool if p["gender"] == "M"]
+        gate_all_f = [p for p in gate_pool if p["gender"] == "F"]
         mixed_is_fallback = not (
-            clean_singles_available(males, state) and clean_singles_available(females, state)
+            clean_singles_available(gate_all_m or males, state)
+            and clean_singles_available(gate_all_f or females, state)
         )
         for m_combo in itertools.combinations(mixed_m, 2):
             for f_combo in itertools.combinations(mixed_f, 2):
@@ -1250,10 +1323,13 @@ def pick_match(
     pin: dict | None = None,
 ) -> dict | None:
     req = pin_ids(pin)
-    cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court, require_ids=req)
-    if not cands:
-        return None
+    cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court,
+                                 require_ids=req, cap_filter=True)
     cands = _hard_filter(cands, slot_start, state, exempt=req)
+    if not cands:
+        cands = enumerate_candidates(pool, slot_start, state, rng, court_name=court,
+                                     require_ids=req, cap_filter=False)
+        cands = _hard_filter(cands, slot_start, state, exempt=req)
     if not cands:
         return None   # 3연속을 만들지 않고는 채울 수 없는 코트 → 공석
     if pin:
@@ -1476,22 +1552,53 @@ def balance_cost(state: dict, players: list[dict]) -> float:
         # 공평 기준(내림)보다도 덜 뛴 사람은 사실상 금지 — 쉬는 시간·공백보다 우선한다.
         for i in ids:
             g = state["player_games"][i]
-            short = int(targets[i] + 1e-9) - g
+            # 하한도 그리디와 **같은 기준**(init_state의 fair_floor)을 쓴다. 여기서 분수 목표를
+            # 다시 계산하면(총 게임수 기준) 그리디가 지키려던 하한과 어긋나 미달이 조용히 통과한다.
+            fl = state.get("fair_floor", {}).get(i)
+            lo_i = (max(fl, eff_min_games(pbid[i])) if fl is not None
+                    else int(targets[i] + 1e-9))
+            short = lo_i - g
             if short > 0:
                 cost += G["balance_under"] * short * short
             # 반올림 여유(0.5게임)를 넘겨 못 미치면 별도로 가산.
             frac = targets[i] - g - 0.5
             if frac > 0:
                 cost += G["balance_short"] * frac * frac
+            # 상한 초과는 그리디와 **같은 기준**(init_state가 정한 fair_ceil)으로 본다.
+            # 여기서 분수 목표를 다시 올림하면 그리디가 막던 것을 전역이 눈감아 준다.
+            ceil_i = state.get("fair_ceil", {}).get(i)
+            if ceil_i is not None and not pbid[i].get("filler"):
+                # 채움 지정자 면제 — match_cost의 balance_over와 같은 이유(남는 자리는 채운다).
+                over_t = g - max(ceil_i, eff_min_games(pbid[i]))
+                if over_t > 0:
+                    cost += G["balance_over_g"] * over_t * over_t
 
         # 사용자 요구(26.9.3): 가용 능력이 같은 사람끼리는 최대 1게임 차.
         # 개인별 최소·최대게임수를 적은 사람은 의도적으로 다르므로 제외(review와 같은 기준).
         by_cap = {}
         for i in ids:
             p = pbid[i]
-            if p.get("max_games") or p.get("min_games"):
+            if p.get("filler"):
                 continue
-            by_cap.setdefault(caps[i], []).append(state["player_games"][i])
+            g = state["player_games"][i]
+            # ⚠ review.adjusted_games()와 **같은 기준값**을 써야 한다. 여기서 분수 목표를
+            #   다시 내림·올림하면 review는 격차 2로 RETRY를 내는데 전역 점수에는 고칠 압력이
+            #   없어 **재시도해도 안 고쳐지는 상태**가 된다(독립 리뷰 HIGH 검출, 26.9.10).
+            #   init_state가 정한 fair_floor/fair_ceil이 정본이고, 그게 없을 때만(교류전·자리
+            #   과잉) 이 자리의 분수 목표로 폴백한다.
+            lo_t = state.get("fair_floor", {}).get(i)
+            hi_t = state.get("fair_ceil", {}).get(i)
+            if lo_t is None:
+                lo_t = int(targets[i] + 1e-9)
+            if hi_t is None:
+                hi_t = int(targets[i] + 1e-9)
+            emg = eff_min_games(p)
+            if emg > hi_t:
+                g -= (emg - hi_t)
+            mx = p.get("max_games")
+            if mx and mx < lo_t:
+                g += (lo_t - mx)
+            by_cap.setdefault(caps[i], []).append(g)
         for gs in by_cap.values():
             if len(gs) > 1:
                 over = (max(gs) - min(gs)) - 1
@@ -2201,6 +2308,13 @@ def solve(
             # review가 "가용 능력이 같은 사람끼리" 격차를 볼 때 쓰는 그룹 키다
             # (같은 슬롯 수라도 연속게임=금지면 실제 능력이 낮다).
             "cap": max_games_streak(tuple(p["available_slots"]), p.get("streak") or ""),
+            # 공평 목표(26.9.10~ **둘 다 내림**). review가 "지정 때문에 정당한 편차"를 덜어내고 격차를 잴 때
+            # schedule과 **같은 기준**을 쓰게 하려고 함께 내보낸다. 자리가 남아도는 명단에서는
+            # 목표 자체를 안 잡으므로 None이 되고, 그때 review는 종전 방식으로 폴백한다.
+            "fair_lo": best_state.get("fair_floor", {}).get(pid),
+            "fair_hi": best_state.get("fair_ceil", {}).get(pid),
+            # '채움' 역할(남는 자리만) — 의도적으로 게임수가 적으므로 격차 비교에서 뺀다.
+            "filler": bool(p.get("filler")),
             "slots_played": slots,
             "in_min": p["in_min"],
             "out_min": p["out_min"],

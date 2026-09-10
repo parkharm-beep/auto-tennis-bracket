@@ -21,8 +21,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -64,6 +66,22 @@ HISTORY_JSON = WORKSPACE / "00_history.json"
 PARSED_JSON  = WORKSPACE / "01_parsed.json"
 BRACKET_JSON = WORKSPACE / "02_bracket.json"
 REVIEW_JSON  = WORKSPACE / "03_review.json"
+
+# 시드를 바꿔 다시 뽑으면 고쳐질 수 있는 이슈들. 여기에 없는 high 이슈(특히 long_gap_rate)는
+# 코트 구조에서 나오는 산술적 결과라 재시도로 못 고친다 — 넣으면 매번 최대 횟수까지 헛돌기만 한다.
+# (web/py/run.py와 동일 — 그쪽은 웹 경로, 이쪽은 CLI 경로)
+RETRYABLE_CODES = {
+    "game_gap_group", "game_gap_global", "game_gap_within_club",
+    "min_games_violation", "max_games_violation",
+    "three_consec", "two_consec_banned",
+    "seed_not_kept", "cross_club_pair",
+}
+
+
+def _retryable_issue_codes(review: dict) -> list:
+    """review['issues'] 중 severity=high이고 재시도로 고칠 수 있는 코드의 목록(중복 포함)."""
+    return [i["code"] for i in review.get("issues", [])
+            if i.get("severity") == "high" and i.get("code") in RETRYABLE_CODES]
 
 
 def _date_suffix(date_str: str) -> str:
@@ -254,6 +272,11 @@ def cmd_check(args) -> int:
                    for p in players if p.get("streak") in streak_labels]
     if streak_list:
         print(f"  연속게임 지정 {len(streak_list)}명: " + ", ".join(f"{n}={v}" for n, v in streak_list))
+    filler_list = [p for p in players if p.get("filler")]
+    if filler_list:
+        def _filler_label(p):
+            return f"{p['name']}(최소{p['min_games']})" if p.get("min_games") else p["name"]
+        print(f"  채움 역할 {len(filler_list)}명: " + ", ".join(_filler_label(p) for p in filler_list))
 
     pins = data.get("pins") or []
     if pins:
@@ -328,18 +351,65 @@ def cmd_generate(args) -> int:
         print("\n[중단] 입력 파싱 실패. 위의 [에러]/[경고] 메시지를 확인하세요.")
         return rc
 
-    rc = _run("2/4 대진 생성",
-              [SCRIPTS["schedule"], "--in", PARSED_JSON, "--out", BRACKET_JSON,
-               "--seed", str(args.seed), "--iters", str(args.iters),
-               "--refine", str(args.refine), "--kicks", str(args.kicks), *history_arg])
-    if rc != 0:
-        return rc
+    max_retries = max(0, args.max_retries)
+    if max_retries == 0:
+        # 종전 동작과 완전히 동일 (재시도 없음)
+        rc = _run("2/4 대진 생성",
+                  [SCRIPTS["schedule"], "--in", PARSED_JSON, "--out", BRACKET_JSON,
+                   "--seed", str(args.seed), "--iters", str(args.iters),
+                   "--refine", str(args.refine), "--kicks", str(args.kicks), *history_arg])
+        if rc != 0:
+            return rc
 
-    rc = _run("3/4 품질 검증",
-              [SCRIPTS["review"], "--parsed", PARSED_JSON, "--bracket", BRACKET_JSON,
-               "--out", REVIEW_JSON, *history_arg])
-    if rc != 0:
-        return rc
+        rc = _run("3/4 품질 검증",
+                  [SCRIPTS["review"], "--parsed", PARSED_JSON, "--bracket", BRACKET_JSON,
+                   "--out", REVIEW_JSON, *history_arg])
+        if rc != 0:
+            return rc
+        seed_used = args.seed
+    else:
+        best = None  # (bad_codes, seed, bracket_tmp, review_tmp)
+        all_codes: set = set()
+        for k in range(max_retries + 1):
+            try_seed = args.seed + k * 101
+            bracket_tmp = WORKSPACE / f"02_bracket_try{k}.json"
+            review_tmp = WORKSPACE / f"03_review_try{k}.json"
+
+            rc = _run(f"2/4 대진 생성 (시도 {k + 1}/{max_retries + 1}, 시드 {try_seed})",
+                      [SCRIPTS["schedule"], "--in", PARSED_JSON, "--out", bracket_tmp,
+                       "--seed", str(try_seed), "--iters", str(args.iters),
+                       "--refine", str(args.refine), "--kicks", str(args.kicks), *history_arg])
+            if rc != 0:
+                return rc
+
+            rc = _run(f"3/4 품질 검증 (시도 {k + 1}/{max_retries + 1})",
+                      [SCRIPTS["review"], "--parsed", PARSED_JSON, "--bracket", bracket_tmp,
+                       "--out", review_tmp, *history_arg])
+            if rc != 0:
+                return rc
+
+            review_data = json.loads(review_tmp.read_text(encoding="utf-8"))
+            bad_codes = _retryable_issue_codes(review_data)
+            if bad_codes:
+                all_codes.update(bad_codes)
+            if best is None or len(bad_codes) < len(best[0]):
+                best = (bad_codes, try_seed, bracket_tmp, review_tmp)
+            if not bad_codes:
+                break
+            if k < max_retries:
+                reason = ", ".join(sorted(set(bad_codes)))
+                next_seed = args.seed + (k + 1) * 101
+                print(f"[재시도] {reason} 때문에 시드 {next_seed}로 다시 생성합니다 "
+                      f"({k + 2}/{max_retries + 1})")
+
+        _, seed_used, best_bracket_tmp, best_review_tmp = best
+        shutil.copyfile(best_bracket_tmp, BRACKET_JSON)
+        shutil.copyfile(best_review_tmp, REVIEW_JSON)
+        for f in WORKSPACE.glob("0[23]_*_try*.json"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
     rc = _run("4/4 결과 엑셀 출력",
               [SCRIPTS["render_bracket"], "--parsed", PARSED_JSON, "--bracket", BRACKET_JSON,
@@ -349,6 +419,8 @@ def cmd_generate(args) -> int:
 
     print("\n" + "=" * 60)
     print(f"[완료] {out}")
+    seed_note = "" if seed_used == args.seed else f" (원래 시드 {args.seed}에서 재시도 후 채택)"
+    print(f"  시드: {seed_used}{seed_note}")
     print(f"  검증 결과: {REVIEW_JSON.relative_to(BASE)}")
     print(f"  중간 산출물: _workspace\\01_parsed.json, 02_bracket.json")
     print("=" * 60)
@@ -379,6 +451,9 @@ def main():
                    help="상위 N개 초안을 로컬 개선(공백/대기 줄이기)으로 다듬음")
     p.add_argument("--kicks", type=int, default=40,
                    help="로컬 개선의 무작위 교란 횟수 - 크게 하면 품질↑ 시간↑")
+    p.add_argument("--max-retries", type=int, default=2,
+                   help="품질 미달(재시도로 고칠 수 있는 high 이슈) 시 시드를 바꿔 재시도할 "
+                        "최대 횟수 (기본 2 = 최초 1회 + 재시도 2회, 0=재시도 안 함)")
     p.add_argument("--keep-prev", action="store_true",
                    help="기존 _workspace 보존 (_workspace_prev/로 이동)")
     p.add_argument("--prev1", help="1주전 대진표 엑셀 경로 (겹치는 페어 회피, 우선순위 높음)")

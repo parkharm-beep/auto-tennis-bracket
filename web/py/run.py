@@ -36,7 +36,8 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
     if "코트" not in wb.sheetnames:
         raise ValueError("입력 엑셀에 '코트' 시트가 없습니다.")
 
-    players, perr = parse_players(wb["참가자"])
+    filler_warnings: list = []
+    players, perr = parse_players(wb["참가자"], extra_warnings=filler_warnings)
     courts, cerr = parse_courts(wb["코트"])
     errs = perr + cerr
     if errs:
@@ -50,7 +51,10 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
     schedule_slots = build_schedule_slots(courts)
     attach_available_slots(players, schedule_slots)
 
-    warnings = []
+    # '채움' 칸의 알 수 없는 값 경고 — CLI(parse_input.main)와 같은 것을 웹에도 싣는다.
+    # ⚠ 이 파일은 CLI의 경고 계산을 따로 복제하고 있어, 한쪽만 고치면 웹이 무경고가 된다
+    #   (26.8.20 최소게임수 경고에서 실제로 그랬다. 사용자는 웹만 쓴다).
+    warnings = list(filler_warnings)
 
     # 씨드대진(선택) — 사용자가 직접 고정한 자리. 시트가 없거나 비어 있으면 pins=[]이고
     # 이후 동작은 종전과 완전히 같다.
@@ -96,7 +100,18 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
                 f"'{p['name']}': 최소게임수({p['min_games']}) > {cap_label}({cap}게임) — {cap}게임까지만 보장됨"
             )
 
+        # ⚠ '채움'인데 최소게임수가 비어 0게임이 되는 것은 **의도된 상태**다
+        #   (사용자 확정 26.9.10). 회장이 상시 채움으로 지정돼 있어 경고를 걸면 매주 뜨는 잡음이 된다.
+        #   (CLI parse_input.main과 같은 판단 — 한쪽만 고치면 웹만 다르게 동작한다)
+
     # 혼복희망 클램프 — CLI(parse_input.main)와 같은 방어를 웹에도 건다.
+    # ⚠ '채움'은 교류전(클럽 2개 이상)에서는 적용되지 않는다 — 공평 목표(fair_floor/ceil)를
+    #   교류전에서는 아예 안 잡기 때문이다. 조용히 무시하면 사용자는 적용된 줄 안다.
+    _clubs = {p.get("club", "") for p in players if p.get("club", "")}
+    if len(_clubs) > 1 and any(p.get("filler") for p in players):
+        _fn = ", ".join(p["name"] for p in players if p.get("filler"))
+        warnings.append(f"교류전에서는 '채움'이 적용되지 않습니다 (무시됨): {_fn}")
+
     warnings.extend(clamp_mixed_wish(players))
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
@@ -133,6 +148,22 @@ def _to_bytes(x):
         return None
 
 
+# 시드를 바꿔 다시 뽑으면 고쳐질 수 있는 이슈들. 여기에 없는 high 이슈(특히 long_gap_rate)는
+# 코트 구조에서 나오는 산술적 결과라 재시도로 못 고친다 — 넣으면 매번 최대 횟수까지 헛돌기만 한다.
+RETRYABLE_CODES = {
+    "game_gap_group", "game_gap_global", "game_gap_within_club",
+    "min_games_violation", "max_games_violation",
+    "three_consec", "two_consec_banned",
+    "seed_not_kept", "cross_club_pair",
+}
+
+
+def _retryable_issue_codes(review: dict) -> list:
+    """review['issues'] 중 severity=high이고 재시도로 고칠 수 있는 코드의 목록(중복 포함)."""
+    return [i["code"] for i in review.get("issues", [])
+            if i.get("severity") == "high" and i.get("code") in RETRYABLE_CODES]
+
+
 def _build_hist_pairs(prev_specs) -> list:
     """prev_specs = [(xlsx_bytes|None, weight), ...] (우선순위 높은 것 먼저).
 
@@ -162,6 +193,7 @@ def generate_bracket(
     refine: int = 4,
     kicks: int = 25,
     members_bytes=None,
+    max_retries: int = 2,
 ) -> dict:
     """입력 엑셀 bytes → {xlsx: bytes, review: dict, summary: dict}.
 
@@ -172,6 +204,11 @@ def generate_bracket(
 
     iters=초안 생성 횟수, refine/kicks=공백·대기 줄이는 로컬 개선 강도.
     브라우저(Pyodide)는 네이티브보다 느리므로 기본값을 CLI보다 낮게 잡는다.
+
+    max_retries=재시도 최대 횟수(기본 2 = 최초 1회 + 재시도 2회). review에 재시도로
+    고칠 수 있는 high 이슈(RETRYABLE_CODES)가 남아 있으면 시드를 seed+k*101로 바꿔
+    다시 뽑고, 그중 이슈가 가장 적은 시도를 채택한다. k=0(최초 시도)에서 이미 0개면
+    즉시 중단하므로 재시도가 필요 없는 경우 결과는 이 기능 도입 전과 완전히 같다.
     """
     parsed = _parse_bytes(xlsx_bytes)
     hist_pairs = _build_hist_pairs([(prev1_bytes, DEFAULT_W1), (prev2_bytes, DEFAULT_W2)])
@@ -192,12 +229,27 @@ def generate_bracket(
     names = {p["name"] for p in parsed["players"]}
     couples_present = sum(1 for c in couples if c[0] in names and c[1] in names)
 
-    bracket = solve(
-        parsed["players"], parsed["schedule_slots"],
-        seed=seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
-        couples=couples, pins=parsed.get("pins"),
-    )
-    review = compute_scores(parsed, bracket, hist_pairs)
+    best = None  # (bad_codes, bracket, review, seed_tried)
+    all_bad_codes: set = set()
+    attempts = 0
+    for k in range(max(0, max_retries) + 1):
+        attempts += 1
+        try_seed = seed + k * 101
+        bracket_try = solve(
+            parsed["players"], parsed["schedule_slots"],
+            seed=try_seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
+            couples=couples, pins=parsed.get("pins"),
+        )
+        review_try = compute_scores(parsed, bracket_try, hist_pairs)
+        bad_codes = _retryable_issue_codes(review_try)
+        if bad_codes:
+            all_bad_codes.update(bad_codes)
+        if best is None or len(bad_codes) < len(best[0]):
+            best = (bad_codes, bracket_try, review_try, try_seed)
+        if not bad_codes:
+            break
+    _, bracket, review, seed_used = best
+    retry_reason = sorted(all_bad_codes) if attempts > 1 else []
 
     out_buf = BytesIO()
     render(parsed, bracket, out_buf, date_str, title)
@@ -237,6 +289,12 @@ def generate_bracket(
             "seed_seats": review["scores"].get("seed_seats", 0),
             "seed_seats_kept": review["scores"].get("seed_seats_kept", 0),
             "seed_matches": review["scores"].get("seed_matches", 0),
+            # 재시도 결과 — seed_used는 실제 채택된 시드(재시도 없었으면 원래 seed와 동일),
+            # attempts는 시도 횟수(1이면 재시도 없음), retry_reason은 재시도를 유발한 이슈
+            # 코드 목록(없으면 빈 리스트).
+            "seed_used": seed_used,
+            "attempts": attempts,
+            "retry_reason": retry_reason,
         },
     }
 
@@ -259,16 +317,17 @@ def build_member_settings_bytes() -> bytes:
 
 def generate_bracket_json_result(xlsx_bytes_bin, date_str="", seed=7, iters=20,
                                  title="우리 테니스 클럽 대진표", prev1_bytes=None, prev2_bytes=None,
-                                 refine=4, kicks=25, members_bytes=None):
+                                 refine=4, kicks=25, members_bytes=None, max_retries=2):
     """Pyodide JS 호출용 wrapper. JS의 Uint8Array를 받아 dict 반환.
 
     xlsx 결과는 별도 함수로 가져가도록 분리하지 않고, 결과 dict에 bytes 그대로 포함.
     prev1_bytes/prev2_bytes(있으면)로 지난주/2주전 페어를 회피.
     members_bytes(있으면)로 부부 페어 설정을 덮어쓴다(없으면 내장 기본값).
+    max_retries(기본 2)로 품질 미달 시 재시도 횟수를 조절.
     """
     main_bytes = _to_bytes(xlsx_bytes_bin)
     return generate_bracket(
         main_bytes, date_str=date_str, seed=seed, iters=iters, title=title,
         prev1_bytes=prev1_bytes, prev2_bytes=prev2_bytes, refine=refine, kicks=kicks,
-        members_bytes=members_bytes,
+        members_bytes=members_bytes, max_retries=max_retries,
     )

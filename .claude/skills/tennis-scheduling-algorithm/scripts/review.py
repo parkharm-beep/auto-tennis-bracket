@@ -74,6 +74,27 @@ def max_games_no3(slots: list) -> int:
     return max_games_streak(slots, "")
 
 
+def adjusted_games(m: dict) -> int:
+    """최소/최대게임수 지정 때문에 '정당한' 편차만큼 게임수를 보정한 값.
+
+    schedule.balance_cost()의 by_cap 판정(가용 능력이 같은 사람끼리 1게임차)과 같은 공식이다.
+    최소게임수 지정은 '하한'만, 최대게임수 지정은 '상한'만 말한다 — 반대쪽까지 풀어 주는
+    뜻이 아니므로, 그 반대쪽으로 벌어진 격차는 계속 그대로 잡아야 한다.
+    m에 fair_lo/fair_hi(공평 목표 — 26.9.10~ 둘 다 **내림**)가 없으면 호출하지 않는다(호출부에서 폴백 처리).
+    """
+    g = m["games"]
+    lo, hi = m.get("fair_lo"), m.get("fair_hi")
+    cap = m.get("cap", m["available_slots"])
+    mg = m.get("min_games") or 0
+    emg = min(mg, cap) if mg else 0
+    if hi is not None and emg > hi:
+        g -= (emg - hi)
+    mx = m.get("max_games")
+    if lo is not None and mx and mx < lo:
+        g += (lo - mx)
+    return g
+
+
 def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     matches = bracket["matches"]
     player_stats = bracket["player_stats"]
@@ -111,46 +132,73 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         for _pid in [x for x in list(pin.get("team1") or []) + list(pin.get("team2") or []) if x]:
             pin_slots_by_pid.setdefault(_pid, set()).add(pin["slot_start"])
 
-    # 개인별 최대/최소 게임수를 지정한 사람은 의도적으로 게임수가 다르므로 **그 지정값까지
-    # 그룹 키에 넣어** 같은 조건끼리만 비교한다. 종전처럼 통째로 빼면, 전원이 같은 최소게임수를
-    # 적은 명단에서는 그룹이 비어 공평성 검사가 조용히 꺼진다.
+    # 그룹 키는 **cap(가용 능력)만** 쓴다 — 최소/최대게임수 지정 여부로 그룹을 더 쪼개면
+    # "같은 cap인데 지정자만 따로"가 되어, 지정자가 실제로 만든 격차(예: 최소게임수 보장
+    # 때문에 남보다 더 뛴 것)가 딴 그룹에 숨어 조용히 통과한다(실측 9/12: 권명숙(최소4)
+    # 5게임 vs 임성훈·정정희 3게임, 같은 cap인데 그룹이 갈려 PASS). 대신 지정 때문에 생긴
+    # '정당한' 편차만 adjusted_games()로 덜어내고 비교한다 — 최소게임수 지정은 하한만,
+    # 최대게임수 지정은 상한만 말하므로 반대쪽 격차는 그대로 잡는다.
+    # fair_lo/fair_hi(공평 목표)가 없으면(구버전 JSON, 또는 교류전·자리 과잉이라 schedule이
+    # 목표를 안 잡은 경우 — 자리 과잉이어도 '채움' 지정자만은 목표가 잡히지만 그 사람은 아래에서
+    # 미리 제외되므로 여기 도달하지 않는다) 검사가 조용히 꺼지지 않도록 **종전처럼 지정값을 키에 포함**해 폴백한다.
     # ⚠ 씨드(고정 배치)로 자리를 직접 정해 둔 사람은 **사용자가 만든 격차**이므로 분리한다.
     # 재시도로 고칠 수 없는 것을 RETRY 사유로 삼으면 끝나지 않는다 —
     # three_consec_seed·max_games_seed와 같은 처방이다.
+    # ⚠ '채움' 역할(filler)은 의도적으로 게임수가 적으므로 격차 그룹에서 뺀다
+    # (최소게임수 보장 검사는 아래에서 filler 여부와 무관하게 계속 적용된다).
     groups = defaultdict(list)
     seed_gap_players = []
+    filler_excluded = []
     for s in player_stats:
         if pin_slots_by_pid.get(s["id"]):
             seed_gap_players.append(s["name"])
             continue
+        if s.get("filler"):
+            filler_excluded.append(s)
+            continue
+        # ⚠ schedule의 player_caps()는 `min(최대게임수, max_games_streak)`인데
+        #   player_stats["cap"]에는 최대게임수가 안 들어 있다. 그룹 키에서 spec을 뺀 뒤로는
+        #   이 차이 때문에 최대게임수 지정자가 미지정자와 한 그룹에 들어가 기준이 갈렸다
+        #   (독립 리뷰 MEDIUM 검출). schedule과 같은 식으로 맞춘다.
         cap = s.get("cap", s["available_slots"])
-        spec = (s.get("min_games") or 0, s.get("max_games") or 0)
-        key = (s.get("club", ""), s.get("gender"), cap, spec) if is_exchange else (cap, spec)
+        if s.get("max_games"):
+            cap = min(cap, s["max_games"])
+        has_fair = s.get("fair_lo") is not None or s.get("fair_hi") is not None
+        if has_fair:
+            key = (s.get("club", ""), s.get("gender"), cap) if is_exchange else (cap,)
+        else:
+            spec = (s.get("min_games") or 0, s.get("max_games") or 0)
+            key = (s.get("club", ""), s.get("gender"), cap, spec) if is_exchange else (cap, spec)
         groups[key].append(s)
     scores["game_gap_seed_excluded"] = seed_gap_players
+    scores["game_gap_filler_excluded"] = [f"{f['name']} {f['games']}게임" for f in filler_excluded]
     group_gaps = []
     for grp_key, members in groups.items():
         if len(members) < 2:
             continue
-        gs = [m["games"] for m in members]
+        has_fair = members[0].get("fair_lo") is not None or members[0].get("fair_hi") is not None
+        gs = [adjusted_games(m) for m in members] if has_fair else [m["games"] for m in members]
         gap = max(gs) - min(gs)
         group_gaps.append((grp_key, gap))
         if gap > THRESHOLDS["game_gap_group"]:
-            spec = grp_key[3] if is_exchange else grp_key[1]
             spec_s = ""
-            if spec[0]:
-                spec_s += f"·최소{spec[0]}"
-            if spec[1]:
-                spec_s += f"·최대{spec[1]}"
+            if not has_fair:
+                spec = grp_key[3] if is_exchange else grp_key[1]
+                if spec[0]:
+                    spec_s += f"·최소{spec[0]}"
+                if spec[1]:
+                    spec_s += f"·최대{spec[1]}"
             if is_exchange:
                 label = f"{grp_key[0]}/{grp_key[1]} · 가용 최대 {grp_key[2]}게임{spec_s}"
             else:
                 unit = "게임" if any("cap" in m for m in members) else "슬롯"
                 label = f"가용 최대 {grp_key[0]}{unit}{spec_s}"
+            detail = ", ".join(
+                f"{m['name']} {m['games']}" for m in sorted(members, key=lambda m: -m["games"]))
             issues.append({
                 "severity": "high",
                 "code": "game_gap_group",
-                "msg": f"{label} 그룹 내 게임수 격차 {gap} (임계 {THRESHOLDS['game_gap_group']} 초과)",
+                "msg": f"{label} 그룹 내 게임수 격차 {gap} (임계 {THRESHOLDS['game_gap_group']} 초과) — {detail}",
             })
     scores["group_gaps"] = group_gaps
     scores["max_group_gap"] = max((g for _, g in group_gaps), default=0)
@@ -675,6 +723,8 @@ def print_report(review: dict) -> None:
     print(f"매치 수: {s['match_count']}  (남복 {s['type_count'].get('M',0)} / 여복 {s['type_count'].get('F',0)} / 혼복 {s['type_count'].get('X',0)})")
     print(f"게임수: min={s['games_min']}, max={s['games_max']}, avg={s['games_avg']}, 전체격차={s['game_gap_global']}")
     print(f"가용 능력(최대 게임수) 그룹 내 최대 격차: {s['max_group_gap']}")
+    if s.get("game_gap_filler_excluded"):
+        print(f"채움 역할(격차 비교 제외): {', '.join(s['game_gap_filler_excluded'])}")
     print(f"페어 중복: {s['pair_dup_count']}쌍 ({s['pair_dup_rate']*100:.1f}%)")
     print(f"같은 4명 재대결: 편 바꿔 {s.get('quad_repeats', 0)}회 / 상대편까지 그대로 {s.get('matchup_repeats', 0)}회")
     if s.get("history_pairs_available"):

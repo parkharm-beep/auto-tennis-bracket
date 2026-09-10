@@ -44,6 +44,7 @@ function downloadBlob(bytes, filename, mime) {
 }
 
 let pendingTemplateName = null;
+let lastRequestedSeed = 7;
 
 let workerReady = false;
 const WORKER_VERSION = Date.now();
@@ -176,6 +177,9 @@ runBtn.addEventListener("click", async () => {
   if (prev2) transfer.push(prev2);
   if (members) transfer.push(members);
 
+  const seedVal = parseInt(seedEl.value, 10) || 7;
+  lastRequestedSeed = seedVal;
+
   worker.postMessage(
     {
       type: "generate",
@@ -185,7 +189,7 @@ runBtn.addEventListener("click", async () => {
         prev2,
         members,
         dateStr: dateEl.value || defaultDateStr(),
-        seed: parseInt(seedEl.value, 10) || 7,
+        seed: seedVal,
         iters: parseInt(itersEl.value, 10) || 20,
         title: titleEl.value || "우리 테니스 클럽 대진표",
         // 공백·대기 줄이기(로컬 개선) 강도. 브라우저는 네이티브보다 느려 CLI 기본값보다 낮게 잡는다.
@@ -215,11 +219,19 @@ function handleDone({ xlsx, review, summary, elapsed }) {
   const s = review.scores || {};
   const issues = (review.issues || []).slice(0, 10);
 
+  const retryLine =
+    summary.attempts > 1
+      ? `<p><strong>재시도</strong>: 시드 ${lastRequestedSeed} → ${summary.seed_used}로 재생성 (${summary.attempts}회 시도) — ${
+          (summary.retry_reason || []).join(", ") || "품질 미달"
+        } 해소 시도</p>`
+      : "";
+
   summaryEl.innerHTML = `
     <div class="result-box">
       <div class="result-header">결과 (${elapsed}초)</div>
       <p><strong>참가자</strong> ${summary.players}명 · <strong>코트</strong> ${summary.courts}개 · <strong>매치</strong> ${summary.matches}개</p>
       <p><strong>판정</strong>: <span class="verdict verdict-${v.toLowerCase()}">${v}</span></p>
+      ${retryLine}
       <p><strong>게임수</strong> 평균 ${s.games_avg} (min ${s.games_min} / max ${s.games_max}, 격차 ${s.game_gap_global})</p>
       <p><strong>같은 시간 나온 사람끼리 게임수 격차</strong> 최대 ${s.max_group_gap ?? 0} (1 이하가 목표)${
         (s.game_gap_seed_excluded || []).length

@@ -93,10 +93,10 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         by_key[_norm(mrow["kakao"])] = mrow
         by_key[_norm(mrow["name"])] = mrow
 
-    # 사전채움 로스터: 개인별 평소 IN/OUT·최소/최대게임수·연속게임
+    # 사전채움 로스터: 개인별 평소 IN/OUT·최소/최대게임수·연속게임·채움
     prefill = {name: dict(in_t=in_t, out_t=out_t, min_g=min_g, max_g=max_g,
-                          streak=streak, memo=memo)
-               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, streak, memo)
+                          streak=streak, fill=fill, memo=memo)
+               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, streak, fill, memo)
                in PREFILL_FROM_IMAGE}
 
     rows, unknown = [], []
@@ -113,6 +113,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
             "in_t": pf.get("in_t") or "07:00", "out_t": pf.get("out_t") or "12:00",
             "min_g": pf.get("min_g") or "", "max_g": pf.get("max_g") or "",
             "streak": pf.get("streak") or "",
+            "fill": pf.get("fill") or "",
             "memo": pf.get("memo") or "",
         })
 
@@ -123,6 +124,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
             "mem": "게스트", "in_t": "07:00", "out_t": "12:00",
             "min_g": "", "max_g": guest_max if guest_max else "",
             "streak": "",
+            "fill": "",   # 게스트는 항상 빈칸
             "memo": "게스트" + (f" · 구력 {g['rank']}({g['exp']}년 이상)" if g.get("rank") else ""),
         })
 
@@ -143,6 +145,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         ws.cell(row=i, column=col["최소게임수"]).value = r["min_g"] if r["min_g"] != "" else None
         ws.cell(row=i, column=col["최대게임수"]).value = r["max_g"] if r["max_g"] != "" else None
         ws.cell(row=i, column=col["연속게임"]).value = r["streak"] or None
+        ws.cell(row=i, column=col["채움"]).value = r["fill"] or None
         ws.cell(row=i, column=col["메모"]).value = r["memo"] or None
 
     if not out_path:
