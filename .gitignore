@@ -35,3 +35,7 @@ package-lock.json
 .omc/
 .codex/
 .agents/**/__pycache__/
+
+# 회귀 검사 — 입력은 실명이 들어 있어 커밋 안 함(리포가 공개). 기준선 지표(baseline.json)만 커밋
+회귀/입력/
+회귀/last_run.json
