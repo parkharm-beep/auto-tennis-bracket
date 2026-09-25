@@ -265,6 +265,17 @@ COURT_AFFINITY = {
     "C": {"M": 0.0, "F": 0.0, "X": 0.0},
 }
 
+# 코트 이름을 숫자로 적는 주가 있다(26.9.26 입력 '1'·'2'·'3'). 클럽 표기는 1번=A·2번=B·3번=C.
+# 별칭이 없으면 위 affinity가 조용히 꺼져 여복·혼복 코트와 남복 코트 구분이 사라진다.
+# 'A코트'·'1번 코트'처럼 '코트'·'번'이 붙은 이름도 같은 키로 모은다(종전엔 affinity 미적용).
+# parse_input._court_key(씨드 격자 헤더 매칭)와 같은 규칙 — 고칠 때 둘 다.
+COURT_ALIAS = {"1": "A", "2": "B", "3": "C"}
+
+
+def court_affinity_key(name) -> str:
+    k = str(name).strip().upper().replace("코트", "").replace("번", "").strip()
+    return COURT_ALIAS.get(k, k)
+
 
 def pair_key(a: str, b: str) -> tuple[str, str]:
     return (a, b) if a < b else (b, a)
@@ -966,7 +977,7 @@ def match_cost(
             cost += W["no_member_guest_mix"]
 
     if court_name:
-        affinity = COURT_AFFINITY.get(court_name.upper(), {}).get(match_type, 0.0)
+        affinity = COURT_AFFINITY.get(court_affinity_key(court_name), {}).get(match_type, 0.0)
         cost += W["court_affinity"] * affinity
 
     # (26.8.14 폐지) '여성 07:30 이전 슬롯 회피'는 사용자 지시로 제거 — 이제 여성도
@@ -1457,7 +1468,7 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
     elif mtype == "F" and multi_club:
         cost -= G["women_doubles_bonus"]
 
-    cost += G["court_affinity"] * COURT_AFFINITY.get(str(match["court"]).upper(), {}).get(mtype, 0.0)
+    cost += G["court_affinity"] * COURT_AFFINITY.get(court_affinity_key(match["court"]), {}).get(mtype, 0.0)
 
     # (26.8.14 폐지) '여성 07:30 이전 슬롯 회피' 제거 — 사용자 지시.
 

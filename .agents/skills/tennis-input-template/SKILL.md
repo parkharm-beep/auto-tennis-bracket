@@ -58,6 +58,12 @@ description: 테니스 대진표 입력용 빈 엑셀 템플릿을 생성하고,
 ### 시트 4: `안내` (읽기 전용, 사용자가 채우지 않음)
 - 작성 가이드와 주의사항 텍스트
 
+## 클럽 사실의 정본 — `web/py/club_config.json` (26.9.25~)
+
+코트 기본값(`COURTS_DEFAULT`)·정회원 사전채움(`PREFILL_FROM_IMAGE`)·멤버(`MEMBERS_DEFAULT`)·부부(`COUPLES_DEFAULT`)·등급 호칭(`RANK_EXP`)은
+**더 이상 .py에 하드코딩하지 않는다.** `club_config.py`가 이 JSON 한 파일에서 읽어 종전과 같은 이름·모양의 상수로 만든다.
+회원 평소 시간·코트 운영시간·부부 설정이 바뀌면 **JSON만 고치고** `python 회귀/regress.py`로 대진 영향을 확인한다.
+
 ## 멤버 설정 파일 (클럽멤버_설정.xlsx)
 
 `build_member_settings()`로 생성(CLI `--member-settings` / 웹 '멤버 설정 다운로드'), `parse_member_settings()`로 파싱.

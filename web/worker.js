@@ -10,6 +10,8 @@ const PY_FILES = [
   "history.py",
   "render_bracket.py",
   "build_template.py",
+  "club_config.py",
+  "club_config.json",   // 클럽 사실(코트·회원·부부) 단일 정본 — club_config.py가 같은 폴더에서 읽는다
   "run.py",
 ];
 

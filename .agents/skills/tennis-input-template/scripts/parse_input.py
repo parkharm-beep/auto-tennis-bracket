@@ -15,55 +15,23 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 
-# ---------------------------------------------------------------------------
-# 클럽 멤버 설정 기본값 — 멤버 설정 파일(클럽멤버_설정.xlsx)이 없을 때 사용.
-# 26.8.2 카톡 투표 명단(25명, 사용자 확정본) 기준.
-# ---------------------------------------------------------------------------
-MEMBERS_DEFAULT = [
-    # (카톡아이디, 실제이름, 성별, 구력, 메모)
-    # 성별·구력은 26.8.2 사용자 확정본(테니스_입력양식_사전채움_25명.xlsx) 기준.
-    ("김도윤",      "김도윤", "남", 10, ""),
-    ("김효순",      "김효순", "남", 5,  ""),
-    ("남궁석",      "남궁석", "남", 10, ""),
-    ("노남숙",      "노남숙", "여", 3,  ""),
-    ("명수기❤️",    "서명숙", "여", 5,  ""),
-    ("민기준",      "민기준", "남", 5,  ""),
-    ("박경수",      "박경수", "남", 5,  ""),
-    ("박진우",      "박진우", "남", 7,  ""),
-    ("서종수",      "서종수", "남", 5,  ""),
-    ("성현",        "경성현", "남", 4,  ""),
-    ("원유철",      "원유철", "남", 4,  ""),
-    ("이강진",      "이강진", "남", 4,  ""),
-    ("이성돈",      "이성돈", "남", 10, ""),
-    ("이성수",      "이성수", "남", 7,  ""),
-    ("이지은",      "이지은", "여", 3,  ""),
-    ("임성훈",      "임성훈", "남", 5,  ""),
-    ("정재동",      "정재동", "남", 10, ""),
-    ("정진락",      "정진락", "남", 10, ""),
-    ("정희",        "정정희", "여", 5,  ""),
-    ("최종인",      "최종인", "남", 10, ""),
-    ("한병익",      "한병익", "남", 10, ""),
-    ("혜선",        "전혜선", "여", 7,  ""),
-    ("HJ Shin",     "신혁재", "남", 5,  ""),
-    ("Joonhak Kim", "김준학", "남", 10, ""),
-    ("Mira",        "방미라", "여", 3,  ""),
-]
+# 클럽 멤버·부부 기본값 — 멤버 설정 파일(클럽멤버_설정.xlsx)이 없을 때 사용.
+# 클럽 사실이라 web/py/club_config.json에서 읽는다(단일 정본). 모양은 종전과 같다:
+#   MEMBERS_DEFAULT = [(카톡아이디, 실제이름, 성별, 구력, 메모)]
+#   COUPLES_DEFAULT = [(이름1, 이름2, 원함, 종료시간차)] — 원함 True=혼복 같은 팀 우대 / False=회피,
+#     종료시간차 None=같이 끝남(30분 이내) / 30=반드시 정확히 30분 차이.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from club_config import MEMBERS_DEFAULT, COUPLES_DEFAULT  # noqa: E402
 
-# 부부 페어: (이름1, 이름2, 혼복에서 부부페어를 원하는지, 종료시간차)
-# 원함=True → 혼복이 나올 때 부부가 같은 팀이 되는 것을 우대.
-# 피함=False → 부부를 같은 팀으로 묶지 않게 회피(소프트).
-# 종료시간차: None=같이 끝남(30분 이내 목표) / 30=마지막 경기 종료가 반드시 정확히 30분 차이
-#   (신혁재·방미라 — 26.8.6 사용자 확정 '기본 반영 사항').
-COUPLES_DEFAULT = [
-    ("박경수", "서명숙", False, None),
-    ("한병익", "전혜선", True,  None),
-    ("신혁재", "방미라", False, 30),
-    ("원유철", "이지은", False, None),
-    # 게스트 부부 (26.8.6 '피함' 확정) — 설정 파일에만 있고 내장 기본값에 없어서
-    # 멤버 설정을 안 올리면 웹에서 부부 규칙이 통째로 미적용이던 것을 26.8.14 등록.
-    # 부부 규칙은 두 사람이 모두 참가자 명단에 있을 때만 발동하므로 상시 등록해도 무해.
-    ("이선우", "김희진", False, None),
-]
+# 코트 이름 별칭 — 클럽 표기 1번=A·2번=B·3번=C. schedule.py의 COURT_ALIAS·court_affinity_key와 같은 규칙
+# (스킬 폴더가 달라 CLI에서 서로 import할 수 없어 사본을 둔다. 고칠 때 둘 다).
+_COURT_ALIAS = {"1": "A", "2": "B", "3": "C"}
+
+
+def _court_key(name) -> str:
+    k = str(name).strip().upper().replace("코트", "").replace("번", "").strip()
+    return _COURT_ALIAS.get(k, k)
+
 
 _COUPLE_WANT_WORDS = ("원함", "희망", "허용", "O", "o", "예", "y", "Y")
 
@@ -627,6 +595,12 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
             court_name = str(hdr_val).replace("번코트", "").strip() if hdr_val else ""
             tag = f"씨드대진 {min_to_hhmm(slot_start)} {court_name}코트"
 
+            if court_name not in slot["courts"]:
+                # 씨드 격자 헤더는 항상 A·B·C인데 그 주 '코트' 시트가 1·2·3이면 이름이 안 맞는다.
+                # 1번=A·2번=B·3번=C로 맞춰 본다(schedule.court_affinity_key와 같은 규칙).
+                same = [c for c in slot["courts"] if _court_key(c) == _court_key(court_name)]
+                if len(same) == 1:
+                    court_name = same[0]
             if court_name not in slot["courts"]:
                 errors.append(f"{tag}: 이 시간에는 {court_name}코트를 운영하지 않습니다")
                 continue

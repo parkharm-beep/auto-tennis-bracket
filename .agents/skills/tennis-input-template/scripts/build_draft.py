@@ -34,8 +34,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_input import MEMBERS_DEFAULT, parse_member_roster  # noqa: E402
 from build_template import PREFILL_FROM_IMAGE, build_template  # noqa: E402
 
-# 클럽 등급 호칭 → 구력 환산 (사용자 확정, 26.8.2): 금배 20년+, 은배 15년+, 동배 10년+
-RANK_EXP = {"금배": 20, "은배": 15, "동배": 10}
+# 클럽 등급 호칭 → 구력 환산 (사용자 확정, 26.8.2) — web/py/club_config.json '등급구력'
+from club_config import RANK_EXP  # noqa: E402
 
 
 def _norm(s: str) -> str:
