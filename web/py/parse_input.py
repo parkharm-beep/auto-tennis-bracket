@@ -21,7 +21,29 @@ from openpyxl.utils import get_column_letter
 #   COUPLES_DEFAULT = [(이름1, 이름2, 원함, 종료시간차)] — 원함 True=혼복 같은 팀 우대 / False=회피,
 #     종료시간차 None=같이 끝남(30분 이내) / 30=반드시 정확히 30분 차이.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from club_config import MEMBERS_DEFAULT, COUPLES_DEFAULT  # noqa: E402
+from club_config import MEMBERS_DEFAULT, COUPLES_DEFAULT, PAIR_FORBIDDEN_DEFAULT  # noqa: E402
+
+
+def pair_forbidden_notes(players: list, pins: list,
+                         forbidden=PAIR_FORBIDDEN_DEFAULT) -> tuple[list, list]:
+    """같은팀금지 짝 중 이번 주에 둘 다 온 짝과, 씨드대진이 그 짝을 같은 팀으로 묶은 경고.
+
+    CLI(main)와 웹(run.py)이 같은 문구를 쓰도록 한 곳에 둔다 — 경고를 양쪽에서 따로
+    계산하면 한쪽만 고쳐져 웹이 무경고가 된다(26.8.20 최소게임수 경고에서 실제로 그랬다).
+    반환: (이번 주 해당 짝 [(이름1, 이름2)], 씨드 경고 문구 목록)
+    """
+    names = {p["name"] for p in players}
+    present = [(a, b) for a, b in forbidden if a in names and b in names]
+    id_name = {p["id"]: p["name"] for p in players}
+    warns = []
+    for pin in pins or []:
+        for side in ("team1", "team2"):
+            team = {id_name.get(x) for x in (pin.get(side) or []) if x}
+            for a, b in present:
+                if a in team and b in team:
+                    warns.append(f"씨드대진 {min_to_hhmm(pin['slot_start'])} {pin['court']}코트: "
+                                 f"같은 팀 금지 짝 {a}·{b}을(를) 같은 팀으로 적었습니다. 씨드가 우선해 그대로 둡니다")
+    return present, warns
 
 # 코트 이름 별칭 — 클럽 표기 1번=A·2번=B·3번=C. schedule.py의 COURT_ALIAS·court_affinity_key와 같은 규칙
 # (스킬 폴더가 달라 CLI에서 서로 import할 수 없어 사본을 둔다. 고칠 때 둘 다).
@@ -596,7 +618,7 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
             tag = f"씨드대진 {min_to_hhmm(slot_start)} {court_name}코트"
 
             if court_name not in slot["courts"]:
-                # 씨드 격자 헤더는 항상 A·B·C인데 그 주 '코트' 시트가 1·2·3이면 이름이 안 맞는다.
+                # 씨드 격자 헤더(사전채움 코트명)와 그 주 '코트' 시트 이름이 다를 수 있다(1·2·3 ↔ A·B·C).
                 # 1번=A·2번=B·3번=C로 맞춰 본다(schedule.court_affinity_key와 같은 규칙).
                 same = [c for c in slot["courts"] if _court_key(c) == _court_key(court_name)]
                 if len(same) == 1:
@@ -827,6 +849,8 @@ def main():
                 print(f"[에러] {e}", file=sys.stderr)
             sys.exit(1)
         warnings.extend(seed_warnings)
+    forbid_present, forbid_seed_warns = pair_forbidden_notes(players, pins)
+    warnings.extend(forbid_seed_warns)
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0
@@ -870,11 +894,16 @@ def main():
                   + ", ".join(_ctag(c) for c in present),
                   file=sys.stderr)
 
+    if forbid_present:
+        print("[안내] 이번 주 참가자 중 같은 팀 금지 짝: "
+              + ", ".join(f"{a}·{b}" for a, b in forbid_present), file=sys.stderr)
+
     result = {
         "courts": courts,
         "players": players,
         "schedule_slots": schedule_slots,
         "couples": couples,
+        "pair_forbidden": [list(x) for x in PAIR_FORBIDDEN_DEFAULT],
         "pins": pins,
         "warnings": warnings,
     }

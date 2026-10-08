@@ -74,7 +74,7 @@ RETRYABLE_CODES = {
     "game_gap_group", "game_gap_global", "game_gap_within_club",
     "min_games_violation", "max_games_violation",
     "three_consec", "two_consec_banned",
-    "seed_not_kept", "cross_club_pair",
+    "seed_not_kept", "cross_club_pair", "pair_forbidden",
 }
 
 

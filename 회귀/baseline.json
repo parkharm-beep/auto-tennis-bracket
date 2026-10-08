@@ -9,7 +9,7 @@
   {
    "case": "0628_교류전",
    "seed": 7,
-   "sec": 84.4,
+   "sec": 48.7,
    "hash": "49296f3524ff",
    "verdict": "PASS",
    "high": [
@@ -34,6 +34,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 2,
@@ -49,7 +50,7 @@
   {
    "case": "0628_교류전",
    "seed": 5003,
-   "sec": 72.2,
+   "sec": 56.1,
    "hash": "7f3e38f65c17",
    "verdict": "PASS",
    "high": [
@@ -75,6 +76,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 2,
@@ -90,7 +92,7 @@
   {
    "case": "0628_교류전",
    "seed": 9011,
-   "sec": 121.3,
+   "sec": 76.0,
    "hash": "b6bcf250e4c0",
    "verdict": "PASS",
    "high": [
@@ -115,6 +117,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 2,
@@ -130,7 +133,7 @@
   {
    "case": "0808_여4명",
    "seed": 7,
-   "sec": 85.7,
+   "sec": 57.5,
    "hash": "2f0abfce96b6",
    "verdict": "PASS",
    "high": [],
@@ -154,6 +157,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -169,7 +173,7 @@
   {
    "case": "0808_여4명",
    "seed": 5003,
-   "sec": 101.2,
+   "sec": 55.4,
    "hash": "bf60d6b8df1a",
    "verdict": "PASS",
    "high": [],
@@ -193,6 +197,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 1,
@@ -208,7 +213,7 @@
   {
    "case": "0808_여4명",
    "seed": 9011,
-   "sec": 97.3,
+   "sec": 48.2,
    "hash": "833e8b86bcb3",
    "verdict": "PASS",
    "high": [],
@@ -232,6 +237,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -247,7 +253,7 @@
   {
    "case": "0815_혼복희망",
    "seed": 7,
-   "sec": 95.2,
+   "sec": 50.5,
    "hash": "6b354a1416f1",
    "verdict": "RETRY",
    "high": [
@@ -274,6 +280,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 1,
@@ -289,7 +296,7 @@
   {
    "case": "0815_혼복희망",
    "seed": 5003,
-   "sec": 52.4,
+   "sec": 29.8,
    "hash": "bde11474af03",
    "verdict": "RETRY",
    "high": [
@@ -318,6 +325,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -333,7 +341,7 @@
   {
    "case": "0815_혼복희망",
    "seed": 9011,
-   "sec": 48.2,
+   "sec": 39.8,
    "hash": "a354e7b325c6",
    "verdict": "RETRY",
    "high": [
@@ -359,6 +367,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -374,7 +383,7 @@
   {
    "case": "0822_연속게임",
    "seed": 7,
-   "sec": 39.7,
+   "sec": 30.1,
    "hash": "e6482dfd40e4",
    "verdict": "RETRY",
    "high": [
@@ -403,6 +412,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 1,
@@ -418,7 +428,7 @@
   {
    "case": "0822_연속게임",
    "seed": 5003,
-   "sec": 41.9,
+   "sec": 38.0,
    "hash": "026e989651df",
    "verdict": "RETRY",
    "high": [
@@ -446,6 +456,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 1,
@@ -461,7 +472,7 @@
   {
    "case": "0822_연속게임",
    "seed": 9011,
-   "sec": 72.5,
+   "sec": 74.6,
    "hash": "46c14ab55b77",
    "verdict": "RETRY",
    "high": [
@@ -488,6 +499,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -503,7 +515,7 @@
   {
    "case": "0905_씨드",
    "seed": 7,
-   "sec": 3.5,
+   "sec": 5.0,
    "hash": "bbb69f2c12d8",
    "verdict": "RETRY",
    "high": [
@@ -528,6 +540,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -543,7 +556,7 @@
   {
    "case": "0905_씨드",
    "seed": 5003,
-   "sec": 3.8,
+   "sec": 4.1,
    "hash": "87e4ad04dd9d",
    "verdict": "RETRY",
    "high": [
@@ -569,6 +582,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -584,7 +598,7 @@
   {
    "case": "0905_씨드",
    "seed": 9011,
-   "sec": 3.7,
+   "sec": 3.3,
    "hash": "93eedcfe3d94",
    "verdict": "RETRY",
    "high": [
@@ -610,6 +624,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -625,7 +640,7 @@
   {
    "case": "0912_채움",
    "seed": 7,
-   "sec": 32.7,
+   "sec": 29.7,
    "hash": "2ab108c01202",
    "verdict": "RETRY",
    "high": [
@@ -651,6 +666,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -666,7 +682,7 @@
   {
    "case": "0912_채움",
    "seed": 5003,
-   "sec": 28.8,
+   "sec": 26.4,
    "hash": "5d6261813af6",
    "verdict": "RETRY",
    "high": [
@@ -692,6 +708,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -707,7 +724,7 @@
   {
    "case": "0912_채움",
    "seed": 9011,
-   "sec": 27.6,
+   "sec": 27.0,
    "hash": "2d6879b576a6",
    "verdict": "RETRY",
    "high": [
@@ -733,6 +750,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -748,7 +766,7 @@
   {
    "case": "0926_코트123",
    "seed": 7,
-   "sec": 35.9,
+   "sec": 28.3,
    "hash": "d6c7612cabb6",
    "verdict": "RETRY",
    "high": [
@@ -773,6 +791,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -788,7 +807,7 @@
   {
    "case": "0926_코트123",
    "seed": 5003,
-   "sec": 33.9,
+   "sec": 33.6,
    "hash": "e7ac63482c6b",
    "verdict": "RETRY",
    "high": [
@@ -813,6 +832,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -828,7 +848,7 @@
   {
    "case": "0926_코트123",
    "seed": 9011,
-   "sec": 31.1,
+   "sec": 40.3,
    "hash": "f893de37a506",
    "verdict": "RETRY",
    "high": [
@@ -853,6 +873,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -866,9 +887,131 @@
    "mixed_skill_viol": 0
   },
   {
+   "case": "1010_금지짝",
+   "seed": 7,
+   "sec": 57.1,
+   "hash": "b44d2d8e6763",
+   "verdict": "RETRY",
+   "high": [],
+   "retryable_high": 0,
+   "attempts": 1,
+   "matches": 20,
+   "M": 13,
+   "F": 4,
+   "X": 3,
+   "games_dist": {
+    "2": 1,
+    "3": 7,
+    "4": 13,
+    "5": 1
+   },
+   "max_group_gap": 1,
+   "three_consec": 0,
+   "two_consec_banned": 0,
+   "min_games_viol": 0,
+   "max_games_viol": 0,
+   "seed_lost": 0,
+   "cross_club_pairs": 0,
+   "couple_avoid": 0,
+   "forbidden_pairs": 0,
+   "couple_over30": 0,
+   "mixed_wish_short": 0,
+   "male_guest_mixed": 0,
+   "long_gaps": 6,
+   "long_gap_players": 6,
+   "total_idle_min": 2130,
+   "pair_dup": 2,
+   "quad_repeats": 0,
+   "matchup_repeats": 0,
+   "skill_avg": 1.1,
+   "mixed_skill_viol": 0
+  },
+  {
+   "case": "1010_금지짝",
+   "seed": 5003,
+   "sec": 43.9,
+   "hash": "218cdd18f808",
+   "verdict": "PASS",
+   "high": [],
+   "retryable_high": 0,
+   "attempts": 1,
+   "matches": 20,
+   "M": 13,
+   "F": 4,
+   "X": 3,
+   "games_dist": {
+    "2": 1,
+    "3": 7,
+    "4": 13,
+    "5": 1
+   },
+   "max_group_gap": 1,
+   "three_consec": 0,
+   "two_consec_banned": 0,
+   "min_games_viol": 0,
+   "max_games_viol": 0,
+   "seed_lost": 0,
+   "cross_club_pairs": 0,
+   "couple_avoid": 0,
+   "forbidden_pairs": 0,
+   "couple_over30": 0,
+   "mixed_wish_short": 0,
+   "male_guest_mixed": 0,
+   "long_gaps": 7,
+   "long_gap_players": 6,
+   "total_idle_min": 2250,
+   "pair_dup": 1,
+   "quad_repeats": 0,
+   "matchup_repeats": 0,
+   "skill_avg": 1.3,
+   "mixed_skill_viol": 0
+  },
+  {
+   "case": "1010_금지짝",
+   "seed": 9011,
+   "sec": 46.4,
+   "hash": "aaa8f0c8cf12",
+   "verdict": "RETRY",
+   "high": [
+    "long_gap_rate"
+   ],
+   "retryable_high": 0,
+   "attempts": 1,
+   "matches": 20,
+   "M": 13,
+   "F": 4,
+   "X": 3,
+   "games_dist": {
+    "2": 1,
+    "3": 7,
+    "4": 13,
+    "5": 1
+   },
+   "max_group_gap": 1,
+   "three_consec": 0,
+   "two_consec_banned": 0,
+   "min_games_viol": 0,
+   "max_games_viol": 0,
+   "seed_lost": 0,
+   "cross_club_pairs": 0,
+   "couple_avoid": 0,
+   "forbidden_pairs": 0,
+   "couple_over30": 0,
+   "mixed_wish_short": 0,
+   "male_guest_mixed": 0,
+   "long_gaps": 7,
+   "long_gap_players": 7,
+   "total_idle_min": 2280,
+   "pair_dup": 2,
+   "quad_repeats": 0,
+   "matchup_repeats": 0,
+   "skill_avg": 1.3,
+   "mixed_skill_viol": 0
+  },
+  {
    "case": "샘플_13명",
    "seed": 7,
-   "sec": 19.7,
+   "sec": 28.3,
    "hash": "04a055809285",
    "verdict": "RETRY",
    "high": [
@@ -896,6 +1039,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -911,7 +1055,7 @@
   {
    "case": "샘플_13명",
    "seed": 5003,
-   "sec": 20.4,
+   "sec": 27.3,
    "hash": "9f7f13b96218",
    "verdict": "RETRY",
    "high": [
@@ -940,6 +1084,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -955,7 +1100,7 @@
   {
    "case": "샘플_13명",
    "seed": 9011,
-   "sec": 6.6,
+   "sec": 9.9,
    "hash": "1fec927bd1f7",
    "verdict": "RETRY",
    "high": [
@@ -984,6 +1129,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -999,7 +1145,7 @@
   {
    "case": "샘플_21명",
    "seed": 7,
-   "sec": 45.2,
+   "sec": 75.6,
    "hash": "dbd66874b2af",
    "verdict": "RETRY",
    "high": [
@@ -1023,6 +1169,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -1038,7 +1185,7 @@
   {
    "case": "샘플_21명",
    "seed": 5003,
-   "sec": 47.3,
+   "sec": 79.9,
    "hash": "1d118aea4b33",
    "verdict": "RETRY",
    "high": [
@@ -1062,6 +1209,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 0,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,
@@ -1077,7 +1225,7 @@
   {
    "case": "샘플_21명",
    "seed": 9011,
-   "sec": 43.6,
+   "sec": 75.8,
    "hash": "06622e4d698d",
    "verdict": "PASS",
    "high": [],
@@ -1099,6 +1247,7 @@
    "seed_lost": 0,
    "cross_club_pairs": 0,
    "couple_avoid": 0,
+   "forbidden_pairs": 0,
    "couple_over30": 1,
    "mixed_wish_short": 0,
    "male_guest_mixed": 0,

@@ -62,6 +62,7 @@ W = dict(
                                 # 그리디에서 그대로 만들어지고, 그런 초안은 전역 점수로도 못 뒤집는다.
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 — 강하게 회피 (인원상 불가피하면 양보)
     couple_want_pair=40.0,      # '원함' 부부가 혼복 같은 팀 — 우대 (음수 비용). 혼복 자체를 늘리진 않게 약하게
+    pair_forbidden=100000.0,    # 같은팀금지 짝(클럽 설정)이 같은 팀 — 사실상 하드. 다른 후보가 하나라도 있으면 안 뽑힌다
     guest_in_mixed=30.0,        # 남자 게스트는 혼복보다 남복 위주 — 혼복에 남자 게스트 1명당 페널티.
                                 # (여자 게스트는 혼복 가능 — 페널티 없음)
                                 # 혼복을 막는 게 아니라 '혼복 남자 자리를 정회원이 맡게' 미는 힘이므로
@@ -142,6 +143,8 @@ G = dict(
                                 # '최소게임수 보장'과 부딪히면 최소게임수가 이긴다
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 (경기당)
     couple_want_pair=30.0,      # '원함' 부부가 혼복 같은 팀 (경기당 보너스, 음수)
+    pair_forbidden=100000.0,    # 같은팀금지 짝이 같은 팀 (팀당) — three_streak과 같은 '사실상 하드'.
+                                # 초안 선택이 이 짝이 묶인 안을 고르지 않게 한다. Refiner는 교환 단계에서 아예 거른다
     couple_finish_gap=120.0,    # 부부 마지막 경기 종료 차이가 30분을 넘으면 (초과 30분 단위)^2
                                 # 부부는 같이 오가므로 같이 끝나거나 30분 안쪽 차이가 목표 (소프트).
                                 # 실측(21명 샘플): 70이면 60분 차가 남고, 200은 공백이 늘어남 — 120이 균형점.
@@ -587,8 +590,35 @@ def _arrange_seats(team: tuple, want) -> tuple:
     return tuple(seats)
 
 
+def build_forbidden(players: list[dict], forbidden) -> set:
+    """이름 기준 같은팀금지 목록([[이름1, 이름2], ...]) → 이번 주 id 기준 pair_key 집합.
+
+    둘 다 이번 주 참가자일 때만 들어간다. 게스트 표기 '(G)'는 이름에 없으므로 그대로 비교한다.
+    """
+    name_to_id = {p["name"]: p["id"] for p in players}
+    out = set()
+    for entry in forbidden or []:
+        if not entry or len(entry) < 2:
+            continue
+        ida, idb = name_to_id.get(str(entry[0]).strip()), name_to_id.get(str(entry[1]).strip())
+        if ida and idb and ida != idb:
+            out.add(pair_key(ida, idb))
+    return out
+
+
+def team_forbidden(team_ids, forbid_pairs, pinned=()) -> bool:
+    """이 팀이 같은팀금지 짝인가. 단 두 사람 모두 씨드로 고정된 자리면 사용자 지정이 우선이라 아니다.
+
+    씨드 좌석은 적은 편(팀1/팀2) 그대로 놓이고 Refiner도 못 움직이므로, 두 사람이 모두 고정인데
+    같은 팀이라면 사용자가 직접 같은 팀으로 적은 것이다.
+    """
+    if not forbid_pairs or pair_key(team_ids[0], team_ids[1]) not in forbid_pairs:
+        return False
+    return not (team_ids[0] in pinned and team_ids[1] in pinned)
+
+
 def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couples=None,
-               pin_slots=None) -> dict:
+               pin_slots=None, forbidden=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
 
@@ -605,6 +635,7 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         bal_members.setdefault(bkey(p), []).append(p["id"])
     mixed_min, mixed_max = mixed_limits(players, schedule_slots, multi)
     couple_pref, couple_list = build_couples(players, couples)
+    forbid_pairs = build_forbidden(players, forbidden)
 
     # 공평 목표치(물채우기)의 내림값. 그리디가 "이 사람에게 남은 기회가 몇 번인가"를
     # 보고 마감이 임박한 사람을 먼저 태우는 기준으로 쓴다(balance_critical).
@@ -663,6 +694,7 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
     return {
         # 부부 페어: 혼복 같은 팀 회피(피함)/우대(원함) + 종료 시각 맞추기용
         "couple_pref": couple_pref,
+        "forbid_pairs": forbid_pairs,
         "couples": couple_list,
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
@@ -796,6 +828,14 @@ def match_cost(
     tol = skill_tol(*all_players)
     if exp_gap > tol:
         cost += W["skill_gap_over_tol"] * (exp_gap - tol) ** 2
+    # 같은팀금지 짝(클럽 설정) — 경기 종류와 무관하게 같은 팀이면 사실상 하드로 막는다.
+    # 단성 복식은 4명 조합마다 편 가르기 3가지를, 혼복은 2가지를 모두 후보로 만들므로
+    # 같은 4명이라도 그 짝을 갈라 놓은 편 구성이 남는다 — 이 항은 그쪽으로 밀어 줄 뿐이다.
+    fp = state.get("forbid_pairs")
+    if fp:
+        for team in (team1, team2):
+            if pair_key(team[0]["id"], team[1]["id"]) in fp:
+                cost += W["pair_forbidden"]
 
     for team in (team1, team2):
         k = pair_key(team[0]["id"], team[1]["id"])
@@ -1347,6 +1387,29 @@ def pick_match(
         cands = _orient_for_pin(cands, pin)
         if not cands:
             return None   # 씨드가 지정한 팀 배치를 만족하는 조합이 없음 → 공석 (review가 보고)
+    # 같은팀금지 짝 — 비용(100000)만으로는 부족하다. 아래 선택은 비용 크기가 아니라 '순위'
+    # 가중치로 무작위 추첨이라, 후보가 몇 개뿐인 슬롯에서는 금지 후보도 뽑힌다(실측: 4명 슬롯
+    # 초안 300개 중 55개). 다른 후보가 하나라도 있으면 아예 뺀다. 씨드로 둘 다 고정한 자리는 면제.
+    fp = state.get("forbid_pairs")
+    if fp:
+        def _safe(cs):
+            return [c for c in cs
+                    if not team_forbidden((c[2][0]["id"], c[2][1]["id"]), fp, req)
+                    and not team_forbidden((c[3][0]["id"], c[3][1]["id"]), fp, req)]
+        safe = _safe(cands)
+        if not safe:
+            # 공평 상한 필터(cap_filter)가 유일한 안전한 짝을 뺐을 수 있다 — 같은 팀 금지가
+            # 게임수 상한보다 우선이므로 필터 없이 다시 찾는다(독립 리뷰 검출). 이 재탐색은
+            # 금지 짝이 걸린 슬롯에서만 일어나 다른 주의 결과(난수 소비)는 바뀌지 않는다.
+            alt = enumerate_candidates(pool, slot_start, state, rng, court_name=court,
+                                       require_ids=req, cap_filter=False)
+            alt = _hard_filter(alt, slot_start, state, exempt=req)
+            if pin and alt:
+                alt = _orient_for_pin(alt, pin)
+            safe = _safe(alt)
+        if not safe:
+            return None   # 그 짝을 갈라 놓을 방법이 없으면 공석 — '절대' 규칙이라 3연속 금지와 같은 처방
+        cands = safe
 
     cands.sort(key=lambda x: x[0])
     pick_pool = cands[: min(len(cands), candidate_top_n)]
@@ -1431,7 +1494,7 @@ def player_timing_cost(slots_sorted: list[int], eff_in: int, streak: str = "") -
 
 
 def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
-                       couple_pref: dict | None = None) -> float:
+                       couple_pref: dict | None = None, forbid_pairs=None) -> float:
     """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트 / 부부 페어)."""
     t1 = [players_by_id[i] for i in match["team1"]]
     t2 = [players_by_id[i] for i in match["team2"]]
@@ -1440,6 +1503,14 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
     tol = skill_tol(*t1, *t2)
     if exp_gap > tol:
         cost += G["skill_gap_over_tol"] * (exp_gap - tol) ** 2
+    # 같은팀금지 짝 — 경기 종류 무관. Refiner.quality()도 이 함수를 쓰므로 교환 delta에 자동 반영된다.
+    # 씨드로 둘 다 고정한 팀은 면제 — 면제하지 않으면 이 100000이 seed_missing(20000/자리)보다
+    # 커서, 초안 선택이 씨드 경기를 지킨 안보다 씨드를 잃은 안을 더 좋게 본다.
+    if forbid_pairs:
+        pinned = match.get("pinned") or ()
+        for team_ids in (match["team1"], match["team2"]):
+            if team_forbidden(team_ids, forbid_pairs, pinned):
+                cost += G["pair_forbidden"]
 
     mtype = match["type"]
     if mtype == "X":
@@ -1659,8 +1730,9 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
 
     # 경기별 품질
     cpref = state.get("couple_pref")
+    fpairs = state.get("forbid_pairs")
     for m in state["matches"]:
-        score += match_quality_cost(m, players_by_id, multi, cpref)
+        score += match_quality_cost(m, players_by_id, multi, cpref, fpairs)
 
     # 혼복 개수: 허용량(단성 복식만으로는 소수 성별의 게임수를 못 채우는 만큼)까지는 가볍게,
     # 그 이상은 급격히 비싸게 — "우선순위는 남복/여복, 혼복은 1~2판까지"를 그대로 표현.
@@ -1752,6 +1824,7 @@ class Refiner:
         self.avail = {p["id"]: set(p.get("available_slots") or []) for p in players}
         # 부부: 혼복 페어 항은 quality()가, 종료시각 맞추기는 교환 delta가 직접 본다
         self.cpref = state.get("couple_pref") or {}
+        self.forbid = state.get("forbid_pairs") or set()
         self.partner = {}
         self.couple_gap = {}   # pair_key → 종료시간차 목표(None=이내 / 30=정확히 30분)
         for ida, idb, _w, gap in state.get("couples", []):
@@ -1866,7 +1939,7 @@ class Refiner:
             self.pbid[pid].get("streak") or "")
 
     def quality(self, m) -> float:
-        return match_quality_cost(m, self.pbid, self.multi, self.cpref)
+        return match_quality_cost(m, self.pbid, self.multi, self.cpref, self.forbid)
 
     def score(self) -> float:
         return full_score(self.state, self.players, self.schedule_slots)
@@ -1903,6 +1976,12 @@ class Refiner:
         if A["gender"] != B["gender"]:
             return None
         if self.multi and A.get("club", "") != B.get("club", ""):
+            return None
+        # 같은팀금지 짝을 새로 만드는 교환은 아예 후보에서 뺀다(사실상 하드). 교차 교환은
+        # A가 B의 짝과, B가 A의 짝과 새 팀이 된다. 경기 명단 통째 이동(_match_swap_plan)은
+        # 팀 구성이 그대로라 따로 막을 필요가 없다.
+        if self.forbid and (pair_key(b_id, m1[side1][1 - idx1]) in self.forbid
+                            or pair_key(a_id, m2[side2][1 - idx2]) in self.forbid):
             return None
 
         sa, sb = self.slots_of[a_id], self.slots_of[b_id]
@@ -2175,10 +2254,11 @@ def run_one_seed(
     hist_pairs=None,
     couples=None,
     pins=None,
+    forbidden=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
     pin_map, pin_slots, pin_court_of = build_pin_index(pins, players)
-    state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots)
+    state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots, forbidden)
     state["pins"] = list(pins or [])   # full_score가 미반영 자리를 세는 데 쓴다
 
     for slot in schedule_slots:
@@ -2243,17 +2323,20 @@ def solve(
     progress=None,
     couples=None,
     pins=None,
+    forbidden=None,
 ) -> dict:
     """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
 
     CLI(main)와 웹(Pyodide run.py)이 공유하는 단일 진입점.
     couples = [[이름1, 이름2, 부부페어 원함], ...] — 혼복 페어 회피/우대 + 종료시각 맞추기.
     pins = 입력 양식 '씨드대진' 시트에서 사용자가 직접 고정한 자리(없으면 None).
+    forbidden = [[이름1, 이름2], ...] — 같은 팀(짝) 금지(클럽 설정). 없으면 None.
     """
     results = []
     for i in range(max(1, iters)):
         s = seed + i
-        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples, pins)
+        state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples, pins,
+                                    forbidden)
         results.append((score, s, state))
         if progress and (i + 1) % 10 == 0:
             progress(f"초안 {i + 1}/{iters}개 생성")
@@ -2398,6 +2481,14 @@ def main():
             applied = build_hist_penalty(players, hist_pairs)
             print(f"[안내] 지난주 페어 회피 반영: 히스토리 {len(hist_pairs)}쌍 중 이번 주 명단과 겹치는 {len(applied)}쌍 회피 대상.")
 
+    forbidden = data.get("pair_forbidden") or None
+    if forbidden:
+        fp = build_forbidden(players, forbidden)
+        if fp:
+            names = {p["id"]: p["name"] for p in players}
+            print("[안내] 같은 팀 금지 짝 반영: "
+                  + ", ".join(f"{names[a]}·{names[b]}" for a, b in sorted(fp)))
+
     pins = data.get("pins") or None
     if pins:
         n_seats = sum(len(pin_ids(pin)) for pin in pins)
@@ -2407,7 +2498,7 @@ def main():
         players, schedule_slots,
         seed=args.seed, iters=args.iters, candidates=args.candidates,
         hist_pairs=hist_pairs, refine=args.refine, kicks=args.kicks,
-        couples=couples, pins=pins,
+        couples=couples, pins=pins, forbidden=forbidden,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

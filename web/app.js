@@ -273,6 +273,11 @@ function handleDone({ xlsx, review, summary, elapsed }) {
           : ""
       }
       ${
+        summary.forbidden_present && summary.forbidden_present.length
+          ? `<p><strong>같은 팀 금지</strong> ${summary.forbidden_present.join(", ")}: 같은 팀 배정 ${summary.forbidden_violations ? `<b>${summary.forbidden_violations}건(위반)</b>` : "0건"}${summary.forbidden_seed ? ` · 씨드로 직접 묶은 자리 ${summary.forbidden_seed}건` : ""}</p>`
+          : ""
+      }
+      ${
         summary.warnings && summary.warnings.length
           ? `<details><summary>경고 ${summary.warnings.length}건</summary><ul>${summary.warnings.map((w) => `<li>${w}</li>`).join("")}</ul></details>`
           : ""

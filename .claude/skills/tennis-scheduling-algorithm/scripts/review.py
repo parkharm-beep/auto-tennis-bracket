@@ -407,6 +407,47 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["cross_club_pairs"] = cross_club_pairs
     scores["same_club_matches"] = same_club_matches
 
+    # 같은팀금지 짝(클럽 설정) — 경기 종류 무관. 씨드대진에 사용자가 직접 같은 팀으로 적은
+    # 경우만 분리한다(씨드가 우선 — 재시도로 못 고치므로 RETRY 사유로 삼지 않는다).
+    name_to_id = {p["name"]: p["id"] for p in parsed["players"]}
+    forbid_ids = set()
+    for entry in parsed.get("pair_forbidden") or []:
+        if entry and len(entry) >= 2:
+            a, b = name_to_id.get(str(entry[0]).strip()), name_to_id.get(str(entry[1]).strip())
+            if a and b and a != b:
+                forbid_ids.add(frozenset((a, b)))
+    seeded_teams = set()
+    for pin in pins:
+        for side in ("team1", "team2"):
+            ids = [x for x in (pin.get(side) or []) if x]
+            if len(ids) == 2:
+                seeded_teams.add((pin["slot_start"], frozenset(ids)))
+    forbidden_pairs, forbidden_pairs_seed = 0, 0
+    if forbid_ids:
+        for m in matches:
+            for team_ids in (m["team1"], m["team2"]):
+                key = frozenset(team_ids)
+                if key not in forbid_ids:
+                    continue
+                n1, n2 = (players_by_id[i]["name"] for i in team_ids)
+                where = f"{min_to_hhmm(m['slot_start'])} {m['court']}코트"
+                if (m["slot_start"], key) in seeded_teams:
+                    forbidden_pairs_seed += 1
+                    issues.append({
+                        "severity": "medium",
+                        "code": "pair_forbidden_seed",
+                        "msg": f"{where}: 같은 팀 금지 짝 {n1}·{n2}이(가) 같은 팀 (씨드대진에 직접 적은 자리라 씨드가 우선)",
+                    })
+                else:
+                    forbidden_pairs += 1
+                    issues.append({
+                        "severity": "high",
+                        "code": "pair_forbidden",
+                        "msg": f"{where}: 같은 팀 금지 짝 {n1}·{n2}이(가) 같은 팀",
+                    })
+    scores["forbidden_pairs"] = forbidden_pairs
+    scores["forbidden_pairs_seed"] = forbidden_pairs_seed
+
     three_consec, two_consec = 0, 0
     two_consec_banned, three_consec_allowed = 0, 0
     three_consec_seed, two_consec_banned_seed = 0, 0
@@ -654,6 +695,8 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         verdict = "RETRY"
 
     if scores["cross_club_pairs"] > 0:
+        verdict = "RETRY"
+    if scores["forbidden_pairs"] > 0:
         verdict = "RETRY"
 
     if is_exchange:

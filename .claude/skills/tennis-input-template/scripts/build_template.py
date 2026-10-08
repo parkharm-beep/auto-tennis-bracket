@@ -186,7 +186,7 @@ def _build_seed_sheet(ws, courts_default: list[tuple[str, str, str]]):
     # 행 1: 결과 대진표라면 타이틀이 들어갈 자리에 사용법 안내를 적는다
     usage = ("[선택] 씨드 대진 — 미리 정해두고 싶은 자리에만 이름을 적으세요. "
              "빈칸은 알고리즘이 알아서 채웁니다. 시트를 통째로 비워두면 기존과 똑같이 동작합니다. "
-             "※ 이 격자는 '코트' 시트 기본값(A·B 08:00~12:00, C 07:00~09:00) 기준입니다 — "
+             "※ 이 격자는 '코트' 시트 기본값(1·2번 08:00~12:00, 3번 07:00~09:00) 기준입니다 — "
              "코트 시간을 바꾸셨다면 회색/노란색 표시가 실제와 다를 수 있고, 판정은 '코트' 시트가 기준입니다.")
     ws.cell(row=1, column=LABEL_COL_START, value=usage)
     ws.merge_cells(start_row=1, start_column=LABEL_COL_START, end_row=1, end_column=courts_col_end)
@@ -306,7 +306,7 @@ def _build_guide_sheet(ws):
         ("• 메모: 자유 기재 (선택, 알고리즘에 영향 없음)", False),
         ("", False),
         ("■ 2. 코트 시트 작성법", True),
-        ("• 기본값: A코트=1번(08:00-12:00), B코트=2번(08:00-12:00), C코트=3번(07:00-09:00)", False),
+        ("• 기본값: 1번(08:00-12:00), 2번(08:00-12:00), 3번(07:00-09:00). 코트명 칸에는 숫자만 적습니다", False),
         ("    - 2026.9.5부터 1·2번 코트는 08:00 시작 (3번 코트는 07:00~09:00 그대로)", False),
         ("• 코트가 더 있거나 운영시간이 다르면 행을 수정/추가하세요", False),
         ("• 시간은 30분 단위, 시작 < 종료", False),
@@ -349,9 +349,9 @@ def _build_guide_sheet(ws):
         ("    (혼합복식의 남자 자리는 가급적 정회원이 맡음 — 여자 게스트는 혼합복식 가능)", False),
         ("", False),
         ("[C] 코트별 우선 배정", True),
-        ("• A코트: 여자복식 + 혼합복식 우선", False),
-        ("• B코트: 남자복식 우선", False),
-        ("• C코트: 무관 (균등 배분)", False),
+        ("• 1번 코트: 여자복식 + 혼합복식 우선", False),
+        ("• 2번 코트: 남자복식 우선", False),
+        ("• 3번 코트: 무관 (균등 배분)", False),
         ("  ※ 단, 인원 부족 시 위 우선순위는 양보될 수 있음", False),
         ("", False),
         ("[D] 시간 제약", True),
@@ -368,6 +368,7 @@ def _build_guide_sheet(ws):
         ("       편을 바꾸면 짝도 상대도 매번 새로우므로 여자복식 3판까지 그대로 만듭니다.", False),
         ("       (여기서 막으면 여자복식이 1판에서 끝나고 나머지가 전부 혼합복식이 됩니다)", False),
         ("• 한 팀에 정회원+게스트 혼합 약하게 권장 (강제 아님)", False),
+        ("• 같은 팀 금지 짝(클럽 설정)은 경기 종류와 무관하게 같은 팀이 되지 않습니다 (상대편은 괜찮음)", False),
         ("", False),
         ("[F] 게임수 균형", True),
         ("• 가용 시간이 같은 사람끼리는 게임수 차이를 최대 1게임까지만 (2게임 차이 나면 재시도)", False),
@@ -535,7 +536,8 @@ def main():
     args = p.parse_args()
     if args.member_settings:
         build_member_settings(args.out)
-        print(f"[OK] 멤버 설정 파일 생성: {args.out}  (멤버 25명 + 부부 페어 시트)")
+        from parse_input import MEMBERS_DEFAULT
+        print(f"[OK] 멤버 설정 파일 생성: {args.out}  (멤버 {len(MEMBERS_DEFAULT)}명 + 부부 페어 시트)")
         return
     build_template(args.out, prefill=args.prefill)
     msg = f"[OK] 입력 템플릿 생성: {args.out}"

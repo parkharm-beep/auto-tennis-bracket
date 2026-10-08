@@ -20,7 +20,9 @@ from parse_input import (
     parse_member_settings,
     parse_seed,
     _max_games_streak,
+    pair_forbidden_notes,
     COUPLES_DEFAULT,
+    PAIR_FORBIDDEN_DEFAULT,
 )
 from schedule import solve
 from review import compute_scores
@@ -64,6 +66,8 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
         if seed_errs:
             raise ValueError("씨드대진 시트 오류:\n  - " + "\n  - ".join(seed_errs))
         warnings.extend(seed_warns)
+    _, forbid_seed_warns = pair_forbidden_notes(players, pins)
+    warnings.extend(forbid_seed_warns)
 
     males = [p for p in players if p["gender"] == "M"]
     females = [p for p in players if p["gender"] == "F"]
@@ -130,6 +134,7 @@ def _parse_bytes(xlsx_bytes: bytes) -> dict:
         "players": players,
         "schedule_slots": schedule_slots,
         "pins": pins,
+        "pair_forbidden": [list(x) for x in PAIR_FORBIDDEN_DEFAULT],
         "warnings": warnings,
     }
 
@@ -154,7 +159,7 @@ RETRYABLE_CODES = {
     "game_gap_group", "game_gap_global", "game_gap_within_club",
     "min_games_violation", "max_games_violation",
     "three_consec", "two_consec_banned",
-    "seed_not_kept", "cross_club_pair",
+    "seed_not_kept", "cross_club_pair", "pair_forbidden",
 }
 
 
@@ -238,7 +243,7 @@ def generate_bracket(
         bracket_try = solve(
             parsed["players"], parsed["schedule_slots"],
             seed=try_seed, iters=iters, hist_pairs=hist_pairs, refine=refine, kicks=kicks,
-            couples=couples, pins=parsed.get("pins"),
+            couples=couples, pins=parsed.get("pins"), forbidden=parsed.get("pair_forbidden"),
         )
         review_try = compute_scores(parsed, bracket_try, hist_pairs)
         bad_codes = _retryable_issue_codes(review_try)
@@ -274,6 +279,10 @@ def generate_bracket(
             "members_uploaded": members_uploaded,
             "couples_total": len(couples),
             "couples_present": couples_present,
+            # 같은 팀 금지 짝(클럽 설정) 중 이번 주에 둘 다 온 짝 — 결과 화면에 적용 사실과 위반 수를 보인다.
+            "forbidden_present": [f"{a}·{b}" for a, b in pair_forbidden_notes(parsed["players"], [])[0]],
+            "forbidden_violations": review["scores"].get("forbidden_pairs", 0),
+            "forbidden_seed": review["scores"].get("forbidden_pairs_seed", 0),
             # 씨드 목록을 그대로 실어 준다 — 사용자는 웹만 쓰므로 '내가 적은 대로 읽혔는지'를
             # 확인할 수단이 웹에 없으면 잘못 붙여넣은 씨드가 조용히 통과한다(CLI --check와 대칭).
             "seed_pins": [

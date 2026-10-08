@@ -144,8 +144,16 @@ description: 테니스 대진표 생성 알고리즘. 슬롯×코트 매트릭�
 - **부부 페어 (`couple_avoid_pair=250` / `couple_want_pair=40`)** — 멤버 설정(부부 시트) 기준.
   '피함' 부부가 혼복 같은 팀이면 강한 페널티, '원함' 부부면 우대(음수). `build_couples()`가
   이름→id 매핑(둘 다 이번 주 참가자일 때만).
+- **같은 팀 금지 짝 (`pair_forbidden=100000`, 26.10.8~)** — `club_config.json` '같은팀금지'(현재 박경수·백용승).
+  경기 종류와 무관하게 같은 팀이면 그리디(`match_cost`)·전역(`match_quality_cost`) 모두 100000.
+  `build_forbidden()`이 이름→id 매핑(둘 다 참가한 주만). **`pick_match`는 무작위 추첨 전에 금지 후보를
+  뺀다**(추첨이 순위 가중치라 비용만으로는 뽑힐 수 있다). 상한 필터 때문에 안전한 후보가 없으면 필터
+  없이 재탐색, 그래도 없으면 코트 공석. **Refiner `_player_swap_plan`은 그 짝을 만드는 교환을 아예
+  거른다** — kick도 같은 함수를 지나므로 로컬 개선이 짝을 되살리지 못한다. 판정은 `team_forbidden()`
+  (씨드로 둘 다 고정한 팀은 면제).
+  review `pair_forbidden`(high, RETRY) / 씨드로 직접 묶은 자리는 `pair_forbidden_seed`(medium).
 - 혼복 구력 규칙 위반(남<여) 1000 — 사실상 금지
-- 코트 affinity(A=여복/혼복, B=남복), 정회원·게스트 혼합
+- 코트 affinity(A=여복/혼복, B=남복 — 코트명 1·2·3은 `court_affinity_key()`가 A·B·C로 매핑), 정회원·게스트 혼합
 - 교류전 여복 우대 `women_doubles_bonus=200`
 
 ### 2) `full_score` — 완성된 대진표 전체 (G 가중치)

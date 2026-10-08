@@ -79,6 +79,16 @@ def validate(cfg: dict) -> list[str]:
         tag = f"부부 {c.get('이름1')}·{c.get('이름2')}"
         t(isinstance(c.get("원함"), bool), f"{tag}: 원함은 true/false")
         t(c.get("종료시간차") in (None, 30), f"{tag}: 종료시간차는 null 또는 30")
+    seen_pair = set()
+    for c in cfg.get("같은팀금지", {}).get("목록", []):
+        a, b = c.get("이름1"), c.get("이름2")
+        tag = f"같은팀금지 {a}·{b}"
+        t(isinstance(a, str) and a.strip() and isinstance(b, str) and b.strip(),
+          f"{tag}: 이름1·이름2는 빈칸이 아닌 글자여야 함")
+        t(a != b, f"{tag}: 같은 사람을 두 번 적음")
+        key = tuple(sorted((str(a), str(b))))
+        t(key not in seen_pair, f"{tag}: 중복")
+        seen_pair.add(key)
     return errs
 
 
@@ -113,3 +123,7 @@ MEMBERS_DEFAULT = sorted(
 # 부부: (이름1, 이름2, 원함, 종료시간차)
 COUPLES_DEFAULT = [(c["이름1"], c["이름2"], c["원함"], c.get("종료시간차"))
                    for c in _CFG["부부"]["목록"]]
+
+# 같은 팀(짝) 금지: (이름1, 이름2) — 경기 종류와 무관. 섹션이 없으면 빈 목록.
+PAIR_FORBIDDEN_DEFAULT = [(c["이름1"].strip(), c["이름2"].strip())
+                          for c in _CFG.get("같은팀금지", {}).get("목록", [])]
