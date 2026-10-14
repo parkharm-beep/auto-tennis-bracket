@@ -278,6 +278,11 @@ function handleDone({ xlsx, review, summary, elapsed }) {
           : ""
       }
       ${
+        summary.mixed_excluded_present && summary.mixed_excluded_present.length
+          ? `<p><strong>혼복 제외:</strong> ${summary.mixed_excluded_present.join(", ")} · 혼복 배정 ${summary.mixed_excluded_violations ? `<b>${summary.mixed_excluded_violations}건(위반)</b>` : "0건"}${summary.mixed_excluded_seed ? ` · 씨드로 직접 고정한 혼복 ${summary.mixed_excluded_seed}건` : ""}</p>`
+          : ""
+      }
+      ${
         summary.warnings && summary.warnings.length
           ? `<details><summary>경고 ${summary.warnings.length}건</summary><ul>${summary.warnings.map((w) => `<li>${w}</li>`).join("")}</ul></details>`
           : ""

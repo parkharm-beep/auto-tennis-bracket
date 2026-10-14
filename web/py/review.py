@@ -11,6 +11,8 @@ import os
 import sys
 from collections import defaultdict
 
+from schedule import build_mixed_excluded, mixed_excluded_hit
+
 
 THRESHOLDS = dict(
     game_gap_global=4,
@@ -448,6 +450,32 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["forbidden_pairs"] = forbidden_pairs
     scores["forbidden_pairs_seed"] = forbidden_pairs_seed
 
+    # 혼복 제외 — 판정은 그리디·Refiner와 같은 함수. 면제는 이 경기의 실제 씨드 고정만 본다.
+    excluded = build_mixed_excluded(parsed["players"], parsed.get("mixed_excluded"))
+    seeded_matches = {(pin["slot_start"], str(pin["court"])):
+                      [i for side in ("team1", "team2") for i in (pin.get(side) or []) if i]
+                      for pin in pins}
+    mixed_excluded, mixed_excluded_seed = 0, 0
+    for m in matches:
+        ids = m["team1"] + m["team2"]
+        if not mixed_excluded_hit(m["type"], ids, players_by_id, excluded):
+            continue
+        pinned = seeded_matches.get((m["slot_start"], str(m["court"])), ())
+        hit = mixed_excluded_hit(m["type"], ids, players_by_id, excluded, pinned)
+        if hit:
+            mixed_excluded += 1
+        else:
+            mixed_excluded_seed += 1
+        names = "·".join(players_by_id[i]["name"] for i in ids if i in excluded)
+        issues.append({
+            "severity": "high" if hit else "medium",
+            "code": "mixed_excluded" if hit else "mixed_excluded_seed",
+            "msg": f"{min_to_hhmm(m['slot_start'])} {m['court']}코트: 혼복 제외 {names}이(가) 혼복 출전"
+                   + ("" if hit else " (씨드대진에 다른 성별 사람과 직접 고정한 경기라 씨드가 우선)"),
+        })
+    scores["mixed_excluded"] = mixed_excluded
+    scores["mixed_excluded_seed"] = mixed_excluded_seed
+
     three_consec, two_consec = 0, 0
     two_consec_banned, three_consec_allowed = 0, 0
     three_consec_seed, two_consec_banned_seed = 0, 0
@@ -695,6 +723,8 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
         verdict = "RETRY"
 
     if scores["cross_club_pairs"] > 0:
+        verdict = "RETRY"
+    if scores["mixed_excluded"] > 0:
         verdict = "RETRY"
     if scores["forbidden_pairs"] > 0:
         verdict = "RETRY"

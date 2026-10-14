@@ -67,6 +67,9 @@ def validate(cfg: dict) -> list[str]:
             v = m.get(f)
             t(v is None or (isinstance(v, int) and not isinstance(v, bool) and v >= 0),
               f"{tag}: {f}는 null 또는 0 이상 정수")
+        v = m.get("혼복희망")
+        t(v is None or v == "제외" or (isinstance(v, int) and not isinstance(v, bool) and v >= 1),
+          f"{tag}: 혼복희망은 null·'제외'·1 이상 정수")
         try:
             t(_hhmm(m["IN"]) < _hhmm(m["OUT"]), f"{tag}: IN이 OUT보다 늦거나 같음")
         except Exception:
@@ -105,11 +108,12 @@ RANK_EXP = {k: v for k, v in _CFG["등급구력"].items() if not k.startswith("_
 
 _MEMBERS = _CFG["회원"]["목록"]
 
-# 사전채움 행: (이름, 성별, 구력, 구분, IN, OUT, 최소게임수, 최대게임수, 연속게임, 채움, 메모)
+# 사전채움 행: (이름, 성별, 구력, 구분, IN, OUT, 최소게임수, 최대게임수, 혼복희망, 연속게임, 채움, 메모)
+#   혼복희망 = '' / '제외'(혼복에 배정하지 않음 — 26.10.14 이성돈) / 정수. 입력 양식 칸 순서와 같다.
 PREFILL_FROM_IMAGE = [
     (m["이름"], m["성별"], m["구력"], m.get("구분", "정회원"), m["IN"], m["OUT"],
-     _blank(m.get("최소게임수")), _blank(m.get("최대게임수")), m.get("연속게임", ""),
-     "예" if m["채움"] else "", m.get("메모", ""))
+     _blank(m.get("최소게임수")), _blank(m.get("최대게임수")), _blank(m.get("혼복희망")),
+     m.get("연속게임", ""), "예" if m["채움"] else "", m.get("메모", ""))
     for m in _MEMBERS
 ]
 

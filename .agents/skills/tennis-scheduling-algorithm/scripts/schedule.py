@@ -62,6 +62,7 @@ W = dict(
                                 # 그리디에서 그대로 만들어지고, 그런 초안은 전역 점수로도 못 뒤집는다.
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 — 강하게 회피 (인원상 불가피하면 양보)
     couple_want_pair=40.0,      # '원함' 부부가 혼복 같은 팀 — 우대 (음수 비용). 혼복 자체를 늘리진 않게 약하게
+    mixed_excluded=100000.0,    # 혼복 제외('혼복희망' 칸 '제외')가 혼복에 — 사실상 하드. 강제 혼복 씨드는 면제
     pair_forbidden=100000.0,    # 같은팀금지 짝(클럽 설정)이 같은 팀 — 사실상 하드. 다른 후보가 하나라도 있으면 안 뽑힌다
     guest_in_mixed=30.0,        # 남자 게스트는 혼복보다 남복 위주 — 혼복에 남자 게스트 1명당 페널티.
                                 # (여자 게스트는 혼복 가능 — 페널티 없음)
@@ -143,6 +144,7 @@ G = dict(
                                 # '최소게임수 보장'과 부딪히면 최소게임수가 이긴다
     couple_avoid_pair=250.0,    # '피함' 부부가 혼복 같은 팀 (경기당)
     couple_want_pair=30.0,      # '원함' 부부가 혼복 같은 팀 (경기당 보너스, 음수)
+    mixed_excluded=100000.0,    # 혼복 제외('혼복희망' 칸 '제외')가 혼복에 — 사실상 하드. 강제 혼복 씨드는 면제
     pair_forbidden=100000.0,    # 같은팀금지 짝이 같은 팀 (팀당) — three_streak과 같은 '사실상 하드'.
                                 # 초안 선택이 이 짝이 묶인 안을 고르지 않게 한다. Refiner는 교환 단계에서 아예 거른다
     couple_finish_gap=120.0,    # 부부 마지막 경기 종료 차이가 30분을 넘으면 (초과 30분 단위)^2
@@ -606,6 +608,28 @@ def build_forbidden(players: list[dict], forbidden) -> set:
     return out
 
 
+def build_mixed_excluded(players: list[dict], names) -> set:
+    """이름 기준 혼복 제외 목록 → 이번 주 참가자 id 집합."""
+    name_to_id = {p["name"]: p["id"] for p in players}
+    return {name_to_id[str(name).strip()] for name in names or []
+            if str(name).strip() in name_to_id}
+
+
+def mixed_excluded_hit(mtype, ids, players_by_id, excluded, pinned=()) -> bool:
+    """혼복 제외 위반인가. 제외자와 다른 성별 사람이 모두 고정된 경기만 씨드 우선."""
+    if mtype != "X" or not excluded:
+        return False
+    for pid in ids:
+        if pid not in excluded:
+            continue
+        if pid in pinned and any(other in pinned and
+                                 players_by_id[other]["gender"] != players_by_id[pid]["gender"]
+                                 for other in ids):
+            continue
+        return True
+    return False
+
+
 def team_forbidden(team_ids, forbid_pairs, pinned=()) -> bool:
     """이 팀이 같은팀금지 짝인가. 단 두 사람 모두 씨드로 고정된 자리면 사용자 지정이 우선이라 아니다.
 
@@ -618,7 +642,7 @@ def team_forbidden(team_ids, forbid_pairs, pinned=()) -> bool:
 
 
 def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couples=None,
-               pin_slots=None, forbidden=None) -> dict:
+               pin_slots=None, forbidden=None, mixed_excluded=None) -> dict:
     distinct_clubs = {p.get("club", "") for p in players if p.get("club", "")}
     multi = len(distinct_clubs) > 1
 
@@ -695,6 +719,7 @@ def init_state(players: list[dict], hist_pairs=None, schedule_slots=None, couple
         # 부부 페어: 혼복 같은 팀 회피(피함)/우대(원함) + 종료 시각 맞추기용
         "couple_pref": couple_pref,
         "forbid_pairs": forbid_pairs,
+        "mixed_excluded": build_mixed_excluded(players, mixed_excluded),
         "couples": couple_list,
         "matches": [],
         "player_games": {p["id"]: 0 for p in players},
@@ -816,9 +841,15 @@ def match_cost(
     court_name: str = "",
     mixed_is_fallback: bool = False,
     quad_forced: bool = False,
+    pinned=(),
 ) -> float:
     cost = 0.0
     all_players = list(team1) + list(team2)
+    # 혼복 제외 — pick_match가 추첨 전에 위반 후보를 다 빼므로 이 항이 선택을 가르지는 않는다.
+    # 같은팀금지(pair_forbidden)와 같은 이중 안전장치로 둔다.
+    if state.get("mixed_excluded") and mixed_excluded_hit(match_type, [p["id"] for p in all_players],
+                          {p["id"]: p for p in all_players}, state.get("mixed_excluded"), pinned):
+        cost += W["mixed_excluded"]
 
     t1_exp = team1[0]["exp"] + team1[1]["exp"]
     t2_exp = team2[0]["exp"] + team2[1]["exp"]
@@ -1171,7 +1202,7 @@ def enumerate_candidates(
                             for bf in Bf:
                                 t2 = (bm, bf)
                                 candidates.append((match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f,
-                                                              court_name, mixed_is_fallback), "X", t1, t2))
+                                                              court_name, mixed_is_fallback, pinned=require_ids), "X", t1, t2))
         return _require_only(candidates, require_ids)
 
     # 단일 클럽(평소): 기존 로직
@@ -1246,7 +1277,7 @@ def enumerate_candidates(
                         t1 = (m_combo[0], f_combo[1])
                         t2 = (m_combo[1], f_combo[0])
                     c = match_cost(t1, t2, "X", slot_start, state, pool_m, pool_f, court_name,
-                                   mixed_is_fallback)
+                                   mixed_is_fallback, pinned=require_ids)
                     candidates.append((c, "X", t1, t2))
 
     return _require_only(candidates, require_ids)
@@ -1391,11 +1422,14 @@ def pick_match(
     # 가중치로 무작위 추첨이라, 후보가 몇 개뿐인 슬롯에서는 금지 후보도 뽑힌다(실측: 4명 슬롯
     # 초안 300개 중 55개). 다른 후보가 하나라도 있으면 아예 뺀다. 씨드로 둘 다 고정한 자리는 면제.
     fp = state.get("forbid_pairs")
-    if fp:
+    excluded = state.get("mixed_excluded")
+    if fp or excluded:
         def _safe(cs):
             return [c for c in cs
                     if not team_forbidden((c[2][0]["id"], c[2][1]["id"]), fp, req)
-                    and not team_forbidden((c[3][0]["id"], c[3][1]["id"]), fp, req)]
+                    and not team_forbidden((c[3][0]["id"], c[3][1]["id"]), fp, req)
+                    and not (excluded and mixed_excluded_hit(c[1], [p["id"] for p in c[2] + c[3]],
+                                               {p["id"]: p for p in c[2] + c[3]}, excluded, req))]
         safe = _safe(cands)
         if not safe:
             # 공평 상한 필터(cap_filter)가 유일한 안전한 짝을 뺐을 수 있다 — 같은 팀 금지가
@@ -1494,7 +1528,7 @@ def player_timing_cost(slots_sorted: list[int], eff_in: int, streak: str = "") -
 
 
 def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
-                       couple_pref: dict | None = None, forbid_pairs=None) -> float:
+                       couple_pref: dict | None = None, forbid_pairs=None, mixed_excluded=None) -> float:
     """한 경기의 품질 비용 (구력차 / 혼복 규칙 / 코트 / 이른 슬롯 여성 / 정회원·게스트 / 부부 페어)."""
     t1 = [players_by_id[i] for i in match["team1"]]
     t2 = [players_by_id[i] for i in match["team2"]]
@@ -1513,6 +1547,9 @@ def match_quality_cost(match: dict, players_by_id: dict, multi_club: bool,
                 cost += G["pair_forbidden"]
 
     mtype = match["type"]
+    if mixed_excluded_hit(mtype, match["team1"] + match["team2"], players_by_id,
+                          mixed_excluded, match.get("pinned") or ()):
+        cost += G["mixed_excluded"]
     if mtype == "X":
         for team in (t1, t2):
             male = team[0] if team[0]["gender"] == "M" else team[1]
@@ -1732,7 +1769,7 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
     cpref = state.get("couple_pref")
     fpairs = state.get("forbid_pairs")
     for m in state["matches"]:
-        score += match_quality_cost(m, players_by_id, multi, cpref, fpairs)
+        score += match_quality_cost(m, players_by_id, multi, cpref, fpairs, state.get("mixed_excluded"))
 
     # 혼복 개수: 허용량(단성 복식만으로는 소수 성별의 게임수를 못 채우는 만큼)까지는 가볍게,
     # 그 이상은 급격히 비싸게 — "우선순위는 남복/여복, 혼복은 1~2판까지"를 그대로 표현.
@@ -1825,6 +1862,7 @@ class Refiner:
         # 부부: 혼복 페어 항은 quality()가, 종료시각 맞추기는 교환 delta가 직접 본다
         self.cpref = state.get("couple_pref") or {}
         self.forbid = state.get("forbid_pairs") or set()
+        self.mixed_excluded = state.get("mixed_excluded") or set()
         self.partner = {}
         self.couple_gap = {}   # pair_key → 종료시간차 목표(None=이내 / 30=정확히 30분)
         for ida, idb, _w, gap in state.get("couples", []):
@@ -1939,7 +1977,7 @@ class Refiner:
             self.pbid[pid].get("streak") or "")
 
     def quality(self, m) -> float:
-        return match_quality_cost(m, self.pbid, self.multi, self.cpref, self.forbid)
+        return match_quality_cost(m, self.pbid, self.multi, self.cpref, self.forbid, self.mixed_excluded)
 
     def score(self) -> float:
         return full_score(self.state, self.players, self.schedule_slots)
@@ -1983,6 +2021,14 @@ class Refiner:
         if self.forbid and (pair_key(b_id, m1[side1][1 - idx1]) in self.forbid
                             or pair_key(a_id, m2[side2][1 - idx2]) in self.forbid):
             return None
+
+        # kick도 이 경로를 쓰므로 혼복 제외 위반을 만드는 교환은 비용과 무관하게 차단한다.
+        if self.mixed_excluded:
+            ids1 = [b_id if i == a_id else i for i in m1["team1"] + m1["team2"]]
+            ids2 = [a_id if i == b_id else i for i in m2["team1"] + m2["team2"]]
+            if (mixed_excluded_hit(m1["type"], ids1, self.pbid, self.mixed_excluded, m1.get("pinned") or ())
+                    or mixed_excluded_hit(m2["type"], ids2, self.pbid, self.mixed_excluded, m2.get("pinned") or ())):
+                return None
 
         sa, sb = self.slots_of[a_id], self.slots_of[b_id]
         if s1 == s2:
@@ -2255,10 +2301,11 @@ def run_one_seed(
     couples=None,
     pins=None,
     forbidden=None,
+    mixed_excluded=None,
 ) -> tuple[dict, float]:
     rng = random.Random(seed)
     pin_map, pin_slots, pin_court_of = build_pin_index(pins, players)
-    state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots, forbidden)
+    state = init_state(players, hist_pairs, schedule_slots, couples, pin_slots, forbidden, mixed_excluded)
     state["pins"] = list(pins or [])   # full_score가 미반영 자리를 세는 데 쓴다
 
     for slot in schedule_slots:
@@ -2324,6 +2371,7 @@ def solve(
     couples=None,
     pins=None,
     forbidden=None,
+    mixed_excluded=None,
 ) -> dict:
     """대진표 생성 전체 절차 (초안 다중 생성 → 상위 초안 로컬 개선 → 최선 선택).
 
@@ -2331,12 +2379,13 @@ def solve(
     couples = [[이름1, 이름2, 부부페어 원함], ...] — 혼복 페어 회피/우대 + 종료시각 맞추기.
     pins = 입력 양식 '씨드대진' 시트에서 사용자가 직접 고정한 자리(없으면 None).
     forbidden = [[이름1, 이름2], ...] — 같은 팀(짝) 금지(클럽 설정). 없으면 None.
+    mixed_excluded = [이름, ...] — 혼복 제외(입력 '혼복희망' 칸 '제외', 이성돈은 사전채움 상시). 강제 혼복 씨드는 우선.
     """
     results = []
     for i in range(max(1, iters)):
         s = seed + i
         state, score = run_one_seed(players, schedule_slots, s, candidates, hist_pairs, couples, pins,
-                                    forbidden)
+                                    forbidden, mixed_excluded)
         results.append((score, s, state))
         if progress and (i + 1) % 10 == 0:
             progress(f"초안 {i + 1}/{iters}개 생성")
@@ -2481,6 +2530,11 @@ def main():
             applied = build_hist_penalty(players, hist_pairs)
             print(f"[안내] 지난주 페어 회피 반영: 히스토리 {len(hist_pairs)}쌍 중 이번 주 명단과 겹치는 {len(applied)}쌍 회피 대상.")
 
+    mixed_excluded = data.get("mixed_excluded") or None
+    excluded_ids = build_mixed_excluded(players, mixed_excluded)
+    if excluded_ids:
+        print("[안내] 혼복 제외 반영: " + ", ".join(p["name"] for p in players if p["id"] in excluded_ids))
+
     forbidden = data.get("pair_forbidden") or None
     if forbidden:
         fp = build_forbidden(players, forbidden)
@@ -2498,7 +2552,7 @@ def main():
         players, schedule_slots,
         seed=args.seed, iters=args.iters, candidates=args.candidates,
         hist_pairs=hist_pairs, refine=args.refine, kicks=args.kicks,
-        couples=couples, pins=pins, forbidden=forbidden,
+        couples=couples, pins=pins, forbidden=forbidden, mixed_excluded=mixed_excluded,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

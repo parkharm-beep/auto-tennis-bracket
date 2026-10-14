@@ -64,7 +64,7 @@ def _build_players_sheet(ws, prefill: str = ""):
 
         idx = r - 2
         if idx < len(prefill_rows):
-            name, gender, exp, mem, in_t, out_t, min_g, max_g, streak, fill, memo = prefill_rows[idx]
+            name, gender, exp, mem, in_t, out_t, min_g, max_g, mixed, streak, fill, memo = prefill_rows[idx]
             if name: ws.cell(row=r, column=2, value=name)
             if gender: ws.cell(row=r, column=3, value=gender)
             if exp != "" and exp is not None: ws.cell(row=r, column=4, value=exp)
@@ -78,7 +78,11 @@ def _build_players_sheet(ws, prefill: str = ""):
             if max_g != "" and max_g is not None:
                 ws.cell(row=r, column=10, value=max_g)
                 ws.cell(row=r, column=10).fill = PREFILL_NOTE_FILL
-            # 혼복희망(col 11)은 사전채움 비움 — 그 주에 요청한 사람만 직접 입력
+            # 혼복희망(col 11): 상시 '제외'(26.10.14 이성돈)만 사전채움에 온다 — 희망 판수는
+            # 그 주에 요청한 사람만 직접 입력한다
+            if mixed != "" and mixed is not None:
+                ws.cell(row=r, column=11, value=mixed)
+                ws.cell(row=r, column=11).fill = PREFILL_NOTE_FILL
             if streak:
                 ws.cell(row=r, column=12, value=streak)
                 ws.cell(row=r, column=12).fill = PREFILL_NOTE_FILL
@@ -295,10 +299,11 @@ def _build_guide_sheet(ws):
         ("    - 비우면 무제한 (IN~OUT 범위 안에서 알고리즘이 자동 분배)", False),
         ("    - 예: '3게임만 하고 갈게요' → 3 입력", False),
         ("    - 최소게임수와 같이 적으면 최소 ≤ 최대여야 합니다", False),
-        ("• 혼복희망: 그중 혼복(남녀 섞인 복식)으로 뛰고 싶은 게임 수 (정수, 선택)", False),
+        ("• 혼복희망: 그중 혼복(남녀 섞인 복식)으로 뛰고 싶은 게임 수 (정수 또는 '제외', 선택)", False),
         ("    - 예: '혼복으로 2게임은 하고 싶어요' → 2 입력", False),
         ("    - 비워 두는 것이 기본입니다. 원칙은 남복/여복이라 혼복은 0판일 수 있습니다", False),
         ("    - 적은 사람이 있으면 그만큼 혼복 판을 만들고 그 자리에 그 사람을 넣습니다", False),
+        ("    - '제외'를 적으면 그 사람은 혼복에 배정하지 않습니다 (사전채움: 이성돈)", False),
         ("• 연속게임: 빈칸=기본(2연속까지 가능·3연속 금지), '금지'=한 게임 뒤 반드시 쉼, '허용'=3연속까지 가능(4연속은 그래도 금지)", False),
         ("    - '허용'은 짧은 시간에 많은 게임을 보장해야 할 때만 사용하세요", False),
         ("• 채움: `예`라고 적으면 그 사람은 다른 사람 배정이 끝난 뒤 남는 자리에만 들어갑니다", False),
@@ -398,6 +403,8 @@ def _build_guide_sheet(ws):
         ("    - 아무도 안 적으면 지금까지와 동일 — 남복/여복 우선 원칙 그대로", False),
         ("    - 남자 게스트도 혼복희망을 적으면 '남복 위주' 규칙에서 본인만 예외가 됩니다", False),
         ("    - 구력·공백·최소게임수 같은 더 강한 규칙에 밀리면 못 채울 수 있음 (검토 보고에 표시)", False),
+        ("• 혼복희망 칸에 '제외' 입력 시 그 사람은 혼복에 배정하지 않음 (hard 제약, 남복·여복은 가능)", False),
+        ("    - 씨드대진에 그 사람과 다른 성별 사람을 같은 경기에 직접 적으면 씨드가 우선합니다", False),
         ("", False),
         ("[I] 교류전 (클럽 대항)", True),
         ("• '클럽' 칸에 둘 이상의 클럽명이 있으면 교류전 모드 자동 작동", False),

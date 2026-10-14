@@ -80,6 +80,7 @@ FAIL_RULES = [
     ("seed_lost", +1),             # 씨드 자리 유실 (26.8.20)
     ("cross_club_pairs", +1),      # 교류전 같은 팀=같은 클럽
     ("couple_avoid", +1),          # '피함' 부부 같은 팀
+    ("mixed_excluded", +1),        # 혼복 제외 위반 (26.10.14)
     ("forbidden_pairs", +1),       # 같은팀금지 짝이 같은 팀 (26.10.8)
     ("retryable_high", +1),        # 시드로 고칠 수 있는 high 이슈가 최종안에 남음
 ]
@@ -156,6 +157,7 @@ def _run_one(case: str, path: str, seed: int) -> dict:
         "cross_club_pairs": s.get("cross_club_pairs", 0),
         "couple_avoid": len(s.get("couple_avoid_paired", [])),
         "forbidden_pairs": s.get("forbidden_pairs", 0),
+        "mixed_excluded": s.get("mixed_excluded", 0),
         "couple_over30": len(s.get("couple_finish_over30", [])) + len(s.get("couple_gap30_missed", [])),
         "mixed_wish_short": len(s.get("mixed_wish_short", [])),
         "male_guest_mixed": s.get("male_guest_mixed_seats", 0),

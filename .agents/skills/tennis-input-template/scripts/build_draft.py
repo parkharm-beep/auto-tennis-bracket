@@ -13,7 +13,7 @@
 - 게스트 구력: 'N년' 또는 '금배'(=20년). 성별은 명단에 없으므로 비워 두고 경고 —
   워크플로우에서 Claude가 이름으로 추정해 채우거나 사용자가 초안에서 수정.
 - IN/OUT: 사전채움 로스터의 개인별 평소 시간. 없는 사람은 코트 운영 전체 시간.
-- 최소/최대게임수: 사전채움 로스터 값 승계. 게스트는 게임수 제약 없음 —
+- 최소/최대게임수·혼복희망('제외')·연속게임·채움: 사전채움 로스터 값 승계. 게스트는 게임수 제약 없음 —
   --guest-max N을 명시할 때만 최대게임수를 채운다(26.8.6 사용자 확인: 기본 제약은 요청된 적 없음).
 - 명단에 없는 참석자(탈퇴자 등)는 초안에서 제외하고 경고로 표시.
 - 기존 출력 파일은 입력/…_백업_<날짜>.xlsx 로 백업 후 덮어씀(--no-backup으로 끔).
@@ -94,9 +94,9 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         by_key[_norm(mrow["name"])] = mrow
 
     # 사전채움 로스터: 개인별 평소 IN/OUT·최소/최대게임수·연속게임·채움
-    prefill = {name: dict(in_t=in_t, out_t=out_t, min_g=min_g, max_g=max_g,
+    prefill = {name: dict(in_t=in_t, out_t=out_t, min_g=min_g, max_g=max_g, mixed=mixed,
                           streak=streak, fill=fill, memo=memo)
-               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, streak, fill, memo)
+               for (name, _g, _e, _m, in_t, out_t, min_g, max_g, mixed, streak, fill, memo)
                in PREFILL_FROM_IMAGE}
 
     rows, unknown = [], []
@@ -112,6 +112,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
             "name": m["name"], "gender": m["gender"], "exp": m["exp"], "mem": "정회원",
             "in_t": pf.get("in_t") or "07:00", "out_t": pf.get("out_t") or "12:00",
             "min_g": pf.get("min_g") or "", "max_g": pf.get("max_g") or "",
+            "mixed": pf.get("mixed") or "",   # 상시 '제외'(26.10.14 이성돈) 승계
             "streak": pf.get("streak") or "",
             "fill": pf.get("fill") or "",
             "memo": pf.get("memo") or "",
@@ -123,6 +124,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
             "name": g["name"], "gender": gg.get(g["name"], ""), "exp": g["exp"] if g["exp"] is not None else "",
             "mem": "게스트", "in_t": "07:00", "out_t": "12:00",
             "min_g": "", "max_g": guest_max if guest_max else "",
+            "mixed": "",
             "streak": "",
             "fill": "",   # 게스트는 항상 빈칸
             "memo": "게스트" + (f" · 구력 {g['rank']}({g['exp']}년 이상)" if g.get("rank") else ""),
@@ -144,6 +146,7 @@ def build_draft(snapshot_text: str, members_path: str = "", out_path: str = "",
         ws.cell(row=i, column=col["OUT시간"]).value = r["out_t"]
         ws.cell(row=i, column=col["최소게임수"]).value = r["min_g"] if r["min_g"] != "" else None
         ws.cell(row=i, column=col["최대게임수"]).value = r["max_g"] if r["max_g"] != "" else None
+        ws.cell(row=i, column=col["혼복희망"]).value = r["mixed"] if r["mixed"] != "" else None
         ws.cell(row=i, column=col["연속게임"]).value = r["streak"] or None
         ws.cell(row=i, column=col["채움"]).value = r["fill"] or None
         ws.cell(row=i, column=col["메모"]).value = r["memo"] or None

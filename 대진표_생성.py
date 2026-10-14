@@ -74,7 +74,7 @@ RETRYABLE_CODES = {
     "game_gap_group", "game_gap_global", "game_gap_within_club",
     "min_games_violation", "max_games_violation",
     "three_consec", "two_consec_banned",
-    "seed_not_kept", "cross_club_pair", "pair_forbidden",
+    "seed_not_kept", "cross_club_pair", "pair_forbidden", "mixed_excluded",
 }
 
 
@@ -267,6 +267,9 @@ def cmd_check(args) -> int:
     wish_list = [(p["name"], p["mixed_wish"]) for p in players if p.get("mixed_wish")]
     if wish_list:
         print(f"  혼복희망 {len(wish_list)}명: " + ", ".join(f"{n}={v}게임" for n, v in wish_list))
+    excl_list = [p["name"] for p in players if p.get("mixed_excluded")]
+    if excl_list:
+        print(f"  혼복 제외 {len(excl_list)}명: " + ", ".join(excl_list))
     streak_labels = {"no2": "금지", "ok3": "허용"}
     streak_list = [(p["name"], streak_labels[p["streak"]])
                    for p in players if p.get("streak") in streak_labels]

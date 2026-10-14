@@ -45,6 +45,42 @@ def pair_forbidden_notes(players: list, pins: list,
                                  f"같은 팀 금지 짝 {a}·{b}을(를) 같은 팀으로 적었습니다. 씨드가 우선해 그대로 둡니다")
     return present, warns
 
+def mixed_excluded_notes(players: list, pins: list) -> tuple[list, list]:
+    """혼복 제외('혼복희망' 칸 '제외') 대상 이름과 강제 혼복 씨드 경고 — CLI와 웹이 함께 쓴다.
+
+    대상은 입력 양식에서 읽는다(사전채움이 클럽 설정의 상시 '제외'를 채워 준다, 26.10.14 이성돈).
+    희망 판수와 '제외'는 같은 칸이라 둘이 함께 적힐 수 없다.
+    """
+    present = [p["name"] for p in players if p.get("mixed_excluded")]
+    by_id = {p["id"]: p for p in players}
+    warns = []
+    for pin in pins or []:
+        ids = [i for side in ("team1", "team2") for i in (pin.get(side) or []) if i]
+        for i in ids:
+            p = by_id[i]
+            if p["name"] in present and any(by_id[j]["gender"] != p["gender"] for j in ids):
+                warns.append(f"씨드대진 {min_to_hhmm(pin['slot_start'])} {pin['court']}코트: "
+                             f"혼복 제외 {p['name']}과 다른 성별 사람을 같은 경기에 적었습니다. 씨드가 우선해 그대로 둡니다")
+    # 제외 대상은 단성 복식만 뛸 수 있다 — 참석 시간에 같은 성별이 4명 미만이면 못 뛴다.
+    # 알고리즘·review는 이 사람을 여전히 혼복 가능자로 세어 공평 목표·최소게임수 보장을 잡으므로,
+    # 미리 알리지 않으면 재시도로 못 고치는 RETRY만 뜬다(독립 리뷰 검출 — 여자 2명 중 1명 제외 시
+    # 두 사람 모두 0게임). 지금 대상(이성돈, 남자 다수)에서는 뜨지 않는다.
+    for p in players:
+        if not p.get("mixed_excluded"):
+            continue
+        same = [q for q in players if q["gender"] == p["gender"]]
+        ok_slots = sorted(s for s in (p.get("available_slots") or [])
+                          if sum(1 for q in same if s in (q.get("available_slots") or [])) >= 4)
+        if not ok_slots:
+            warns.append(f"'{p['name']}': 혼복 제외인데 참석 시간에 같은 성별이 4명 미만이라 경기를 뛸 수 없습니다")
+        elif p.get("min_games"):
+            cap = _max_games_streak(ok_slots, p.get("streak") or "")
+            if p["min_games"] > cap:
+                warns.append(f"'{p['name']}': 혼복 제외라 단성 복식이 가능한 시간 기준 최대 {cap}게임 — "
+                             f"최소게임수({p['min_games']})를 다 채우지 못할 수 있습니다")
+    return present, warns
+
+
 # 코트 이름 별칭 — 클럽 표기 1번=A·2번=B·3번=C. schedule.py의 COURT_ALIAS·court_affinity_key와 같은 규칙
 # (스킬 폴더가 달라 CLI에서 서로 import할 수 없어 사본을 둔다. 고칠 때 둘 다).
 _COURT_ALIAS = {"1": "A", "2": "B", "3": "C"}
@@ -264,14 +300,22 @@ def parse_players(ws, extra_warnings: list | None = None) -> tuple[list[dict], l
 
             # 혼복희망 (선택): "그중 혼복으로 N게임 뛰고 싶다".
             # 비워 두면 지금까지와 완전히 동일 — 적은 사람이 있을 때만 혼복 하한이 열린다.
+            # '제외'면 그 사람은 혼복에 배정하지 않는다(사실상 하드, 26.10.14 — 이성돈 상시 사전채움).
             mixed_wish = None
+            mixed_excluded = False
             if "혼복희망" in col_idx:
                 raw = row[col_idx["혼복희망"]]
-                if raw not in (None, ""):
+                normalized = "".join(str(raw).split()) if raw is not None else ""
+                # '안함'·'불가'는 연속게임 칸에서 '금지'로 읽는 낱말이고, 여기서는 '희망 없음'(빈칸)으로
+                # 읽힐 수도 있어 하드 규칙의 스위치로 쓰지 않는다 — '제외'만 받는다.
+                if normalized in {"제외", "혼복제외"}:
+                    mixed_excluded = True
+                elif normalized:   # 공백만 든 셀은 빈칸 취급(연속게임 칸과 같다)
                     try:
                         mixed_wish = int(raw)
                     except (ValueError, TypeError):
-                        raise ValueError(f"'{name}': 혼복희망은 정수여야 합니다 (현재: '{raw}')")
+                        raise ValueError(
+                            f"'{name}': 혼복희망은 정수 또는 '제외'여야 합니다 (현재: '{raw}')")
                     if mixed_wish < 1:
                         raise ValueError(f"'{name}': 혼복희망은 1 이상이어야 합니다")
                     if max_games is not None and mixed_wish > max_games:
@@ -324,6 +368,7 @@ def parse_players(ws, extra_warnings: list | None = None) -> tuple[list[dict], l
             "max_games": max_games,
             "min_games": min_games,
             "mixed_wish": mixed_wish,
+            "mixed_excluded": mixed_excluded,
             "streak": streak,
             "filler": filler,
         })
@@ -661,6 +706,19 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
                 errors.append(f"{tag}: 이 조합으로는 경기를 만들 수 없습니다 — "
                               f"남복(전원 남)·여복(전원 여)·혼복(각 팀 남1+여1) 중 하나여야 합니다")
                 continue
+            # 혼복 제외('혼복희망' 칸 '제외')인 사람이 든 고정은, 다른 성별 사람까지 함께 고정해
+            # 혼복을 직접 지정한 경우가 아니면 혼복이 될 수 없다(schedule.mixed_excluded_hit과 같은 면제).
+            # 여기서 빼지 않으면 혼복밖에 못 만드는 시간에 그 코트가 조용히 비고, review는
+            # 자리 겹침을 말하는 seed_not_kept만 내며 웹은 재시도만 헛돈다(독립 리뷰 검출, 26.10.14).
+            excl_here = [p for p in resolved if p.get("mixed_excluded")]
+            if excl_here and "X" in types and not any(
+                    q["gender"] != e["gender"] for e in excl_here for q in resolved):
+                types = types - {"X"}
+                if not types:
+                    errors.append(f"{tag}: 혼복 제외인 {', '.join(e['name'] for e in excl_here)}이(가) "
+                                  f"든 고정이 혼복으로만 완성됩니다 — 같은 성별끼리 고정하거나 "
+                                  f"다른 성별 사람까지 직접 적으세요")
+                    continue
 
             # 그 시간에 인원이 모자라면 어떤 종류로도 완성할 수 없다. 여기서 막지 않으면
             # 알고리즘이 그 코트를 조용히 비우고 사용자는 결과를 열어 보고서야 알게 된다.
@@ -669,7 +727,9 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
                        or ("X" in types and n_m >= 2 and n_f >= 2)
             if not feasible:
                 errors.append(f"{tag}: 이 시간에 뛸 수 있는 인원이 남 {n_m}명·여 {n_f}명뿐이라 "
-                              f"이 고정을 완성할 수 없습니다")
+                              f"이 고정을 완성할 수 없습니다"
+                              + (" (혼복 제외가 든 고정이라 혼복으로는 못 채웁니다)"
+                                 if excl_here and "X" not in types else ""))
                 continue
 
             if multi_club:
@@ -851,6 +911,8 @@ def main():
         warnings.extend(seed_warnings)
     forbid_present, forbid_seed_warns = pair_forbidden_notes(players, pins)
     warnings.extend(forbid_seed_warns)
+    mixed_present, mixed_warns = mixed_excluded_notes(players, pins)
+    warnings.extend(mixed_warns)
 
     # 최소게임수 합계가 전체 자리(코트×슬롯×4)보다 많으면 다 지킬 수 없다 — 미리 알림
     total_seats = 0
@@ -894,6 +956,9 @@ def main():
                   + ", ".join(_ctag(c) for c in present),
                   file=sys.stderr)
 
+    if mixed_present:
+        print("[안내] 이번 주 혼복 제외: " + ", ".join(mixed_present), file=sys.stderr)
+
     if forbid_present:
         print("[안내] 이번 주 참가자 중 같은 팀 금지 짝: "
               + ", ".join(f"{a}·{b}" for a, b in forbid_present), file=sys.stderr)
@@ -904,6 +969,7 @@ def main():
         "schedule_slots": schedule_slots,
         "couples": couples,
         "pair_forbidden": [list(x) for x in PAIR_FORBIDDEN_DEFAULT],
+        "mixed_excluded": [p["name"] for p in players if p.get("mixed_excluded")],
         "pins": pins,
         "warnings": warnings,
     }
