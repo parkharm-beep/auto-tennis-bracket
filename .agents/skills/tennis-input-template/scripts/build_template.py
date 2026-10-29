@@ -147,6 +147,8 @@ def _seed_schedule_from_courts(courts_default: list[tuple[str, str, str]]) -> tu
     파싱 결과가 아니라 코트 기본값에서 직접 계산한다. parse_input.build_schedule_slots와
     같은 규칙(코트별 30분 슬롯의 합집합)을 그대로 따라야 결과 대진표(render_bracket.py)와
     슬롯 개수·순서가 어긋나지 않는다.
+    parse_input._default_grid_slot_count()가 같은 규칙으로 격자 행 수를 다시 센다(씨드를 읽을 때의
+    행 경계) — 규칙을 바꾸면 두 곳을 함께 고친다.
     """
     courts = []
     for name, start, end in courts_default:

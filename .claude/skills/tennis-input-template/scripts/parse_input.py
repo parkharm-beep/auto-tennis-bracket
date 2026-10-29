@@ -21,7 +21,7 @@ from openpyxl.utils import get_column_letter
 #   COUPLES_DEFAULT = [(이름1, 이름2, 원함, 종료시간차)] — 원함 True=혼복 같은 팀 우대 / False=회피,
 #     종료시간차 None=같이 끝남(30분 이내) / 30=반드시 정확히 30분 차이.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from club_config import MEMBERS_DEFAULT, COUPLES_DEFAULT, PAIR_FORBIDDEN_DEFAULT  # noqa: E402
+from club_config import MEMBERS_DEFAULT, COUPLES_DEFAULT, PAIR_FORBIDDEN_DEFAULT, COURTS_DEFAULT  # noqa: E402
 
 
 def pair_forbidden_notes(players: list, pins: list,
@@ -476,6 +476,20 @@ def attach_available_slots(players: list[dict], schedule_slots: list[dict]) -> N
 _SEED_TIME_RE = re.compile(r"(\d{1,2}):(\d{2})")
 
 
+def _default_grid_slot_count() -> int:
+    """씨드대진 격자의 행(슬롯) 수 — build_template._seed_schedule_from_courts와 같은 규칙
+    (코트 기본값의 30분 슬롯 합집합). 규칙을 바꾸면 두 곳을 함께 고친다.
+
+    한계: 양식을 만든 뒤 club_config의 코트 기본값이 바뀌면 옛 양식의 격자 행 수와 어긋난다.
+    그때 넘치는 행은 조용히 버려지지 않고 '인식되지 않는 위치' 오류로 막힌다."""
+    slots = set()
+    for _name, start, end in COURTS_DEFAULT:
+        sh, sm = start.split(":")
+        eh, em = end.split(":")
+        slots.update(range(int(sh) * 60 + int(sm), int(eh) * 60 + int(em), 30))
+    return len(slots)
+
+
 def _clean_seed_name(v) -> str:
     """셀 값에서 표시용 장식을 제거해 순수 이름만 남긴다. history.py의 _clean_name과 동일 규칙 —
 
@@ -606,9 +620,14 @@ def parse_seed(ws, players: list[dict], schedule_slots: list[dict]) -> tuple[lis
     # 2) 성함 행(헤더 다음 행부터 2행 간격) 목록 확보 — col1이 비면 데이터 그리드가 끝난 것.
     #    슬롯 수만큼만 읽는다: 경계가 없으면 시트 아래 메모처럼 '시간처럼 보이는 글자'가 든 행을
     #    슬롯으로 오인해 엉뚱한 고정을 만들어 낸다.
+    #    단 격자 자체는 '코트 기본값' 기준으로 만들어진다(build_template). 그 주 코트 시간표가 더
+    #    늦게 시작하면(26.10.31: 3번 코트 없이 1·2번 08:00~) 슬롯 수가 격자 행 수보다 적어져
+    #    뒤쪽 행(11:00·11:30)이 잘리고 그 자리 씨드가 '인식되지 않는 위치' 오류가 됐다.
+    #    그래서 경계는 둘 중 큰 쪽 — 격자에는 있는데 이번 주에 없는 시각은 아래에서 따로 막는다.
     name_rows = []
     row = header_row + 1
-    while row <= ws.max_row and len(name_rows) < len(schedule_slots):
+    row_limit = max(len(schedule_slots), _default_grid_slot_count())
+    while row <= ws.max_row and len(name_rows) < row_limit:
         col1 = ws.cell(row=row, column=1).value
         if col1 is None or not str(col1).strip():
             break
