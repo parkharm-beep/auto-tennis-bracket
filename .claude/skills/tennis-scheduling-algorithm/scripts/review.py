@@ -632,7 +632,7 @@ def compute_scores(parsed: dict, bracket: dict, hist_pairs=None) -> dict:
     scores["type_count"] = bracket.get("type_count", {})
 
     # 부부 페어: '피함' 부부 혼복 같은팀 / 종료시각 30분 초과 차이 (둘 다 소프트 — 정보용)
-    # 종료시간차=30 부부(신혁재·방미라)는 반대로 '정확히 30분 차이' 미달성을 보고한다.
+    # 종료시간차=30 부부는 반대로 '정확히 30분 차이' 미달성을 보고한다.
     couples = parsed.get("couples") or []
     name_to_id = {p["name"]: p["id"] for p in parsed["players"]}
     stats_by_id = {s["id"]: s for s in player_stats}

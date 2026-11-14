@@ -1804,7 +1804,7 @@ def full_score(state: dict, players: list[dict], schedule_slots: list[dict]) -> 
                 score += G["mixed_wish_short"] * short * short
 
     # 부부는 같이 오간다 — 마지막 경기 종료가 같거나 30분 안쪽 차이가 되게 (소프트)
-    # 단, 종료시간차=30 부부(신혁재·방미라)는 반대로 '정확히 30분 차이'를 목표로 한다.
+    # 단, 종료시간차=30 부부는 반대로 '정확히 30분 차이'를 목표로 한다.
     for ida, idb, _w, gap in state.get("couples", []):
         sa = state["player_slots"].get(ida) or []
         sb = state["player_slots"].get(idb) or []
